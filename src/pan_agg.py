@@ -2,7 +2,7 @@
 # 网盘聚合·补封面外壳：原样加载 0优C跨可.py，只在返回结果时补 vod_pic
 import re, json, html, urllib.request, urllib.parse
 
-_SRC = "https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/pan_engine.py"
+_SRC = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/pan_engine.py"
 _NS = {}
 _PIC = {}
 _HOST = "https://www.xmfyy.com"

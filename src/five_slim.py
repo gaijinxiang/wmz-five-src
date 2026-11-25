@@ -4,11 +4,12 @@
 import time
 import urllib.request
 
-_SRC = "https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py"
+_SRC = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py"
 # 备用镜像：主地址挂了/过期就依次尝试
 _MIRRORS = [
     _SRC,
-    "https://cdn.jsdelivr.net/gh/gaijinxiang/wmz-five-src@main/src/five_full.py",
+    "https://gh-proxy.com/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py",
+    "https://ghproxy.net/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py",
 ]
 _NS = {}
 _CODE = {}

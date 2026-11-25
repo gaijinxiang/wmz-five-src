@@ -27216,7 +27216,7 @@ def _install_quark_stripper():
 # 详情页收口：原有网盘线全部去掉，统一换成「网盘聚合」（0优C跨可.py）搜同一部片得到的网盘线。
 _PAN_ENGINE = {}
 _PAN_FLAG_MAP = {}
-_PAN_SRC = "https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/pan_engine.py"
+_PAN_SRC = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/pan_engine.py"
 
 
 def _pan_engine():
