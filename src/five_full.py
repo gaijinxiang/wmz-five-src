@@ -27251,10 +27251,14 @@ def _replace_netdisk_lines(v):
         got = _pan_search_cached(sp, name)
         _seen_line = set()
         _panadd = []
-        _cands = [x for x in got if _nd_key(_dump(x.get("vod_name"))) == _nd_key(name)][:6]
+        _cands = [x for x in got if _nd_key(_dump(x.get("vod_name"))) == _nd_key(name)][:8]
         if not _cands and got:
             _cands = got[:3]
-        _cands = [x for x in _cands if "卡卡" not in _dump(x.get("vod_id")).split("@")[0]]
+        def _src_of(x):
+            return _dump(x.get("vod_id")).split("@")[0]
+        _cands = [x for x in _cands
+                  if "卡卡" not in _src_of(x)
+                  and not re.match(r"^123(网盘|云盘|pan)?", _src_of(x), re.I)]
         # 并发取详情：原来串行 2~3 秒一条，6 条要十几秒；并发后只需 3 秒左右
         _dets = _pan_detail_many(sp, [_dump(x.get("vod_id")) for x in _cands])
         _loose = []
