@@ -20,28 +20,6 @@
       }
     },
     {
-      "key": "gulu",
-      "name": "🌀咕噜｜4K",
-      "type": 3,
-      "api": "csp_Gulu",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
-      "changeable": 1,
-      "timeout": 60
-    },
-    {
-      "key": "gulu2",
-      "name": "🐧咕噜丨蓝光秒播",
-      "type": 3,
-      "api": "csp_Gulu",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
-      "changeable": 1,
-      "timeout": 60
-    },
-    {
       "key": "橘汁",
       "name": "🍊橘汁丨4K",
       "type": 3,
