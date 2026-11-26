@@ -27391,14 +27391,18 @@ def _replace_netdisk_lines(v):
                 _src = _dump(_c.get("vod_id")).split("@")[0].strip()
                 if not _src or len(_src) > 8 or "http" in _src:
                     _src = ""
-                _parts = ["网盘"] + ([_src] if _src else []) + [f.replace("网盘·", "", 1)]
-                _lab = "·".join([x for x in _parts if x])
                 _q = _line_q(u)
                 _low = _dump(u).lower() + _dump(f).lower()
                 if ".mp3" in _low or ".m4a" in _low or "播讲" in _low or "解说" in _low:
                     continue      # 有声书/播讲不是正片
-                if _q != "4k":
-                    continue      # 只认 4K：1080P/720P/480P/看不出画质的一律不显示
+                if _q == "low":
+                    continue      # 480P/720P/标清不要
+                _parts = ["网盘"] + ([_src] if _src else []) + [f.replace("网盘·", "", 1)]
+                _lab = "·".join([x for x in _parts if x])
+                if _q == "4k":
+                    _lab += "·4K"
+                elif _q == "1080":
+                    _lab += "·1080P"
                 _panadd.append((_lab, u, f, _src, _q))
         # 集数对齐后，按"网盘类型"各留一条：夸克、UC、百度、迅雷、其它（最多 5 条）
         _TYPES = [("夸克", ("夸克", "quark")), ("UC", ("uc",)),
@@ -27416,13 +27420,30 @@ def _replace_netdisk_lines(v):
         for _x in _panadd:
             t = _typ(_x[2])
             _bytype.setdefault(t, []).append(_x)
+        if not _panadd and _loose:
+            # 一条集数对得上的都没有：兜底给最接近的，名字里标实际集数，别让网盘线整片消失
+            _loose.sort(key=lambda x: abs((x[3] or 0) - (_main_eps or 0)))
+            for f, u, _c, _n2 in _loose[:3]:
+                _src = _dump(_c.get("vod_id")).split("@")[0].strip()
+                _q = _line_q(u)
+                _low = _dump(u).lower() + _dump(f).lower()
+                if ".mp3" in _low or ".m4a" in _low or "播讲" in _low or "解说" in _low or _q == "low":
+                    continue
+                _lab = "·".join([x for x in ["网盘"] + ([_src] if _src else []) +
+                                 [f.replace("网盘·", "", 1)] if x])
+                if _q == "4k":
+                    _lab += "·4K"
+                if _n2:
+                    _lab += "·实%d集" % _n2
+                _panadd.append((_lab, u, f, _src, _q))
+                break
         _picked = []
         for nm, _kws in _TYPES:
             arr = _bytype.get(nm) or []
             if not arr:
                 continue
-            arr.sort(key=lambda x: (0 if (len(x) > 4 and x[4] == "4k") else 1,
-                                    0 if "无限" in x[2] else 1, 0 if x[3] else 1))
+            _rk = {"4k": 0, "1080": 1, "": 2}
+            arr.sort(key=lambda x: (_rk.get(x[4], 3), 0 if "无限" in x[2] else 1, 0 if x[3] else 1))
             _picked.append(arr[0])
         # 其它盘（欧歌/谷歌/阿里等互不相同时）多放两条，别只留一条
         _other = _bytype.get("其它") or []
