@@ -27481,6 +27481,7 @@ def _panso_quark_lines(v):
 
 
 def _replace_netdisk_lines(v):
+    _t0 = time.time()
     try:
         if not _sw("pan", 1):
             return v
@@ -27506,7 +27507,7 @@ def _replace_netdisk_lines(v):
         got = _pan_search_cached(sp, _nm2)
         _seen_line = set()
         _panadd = []
-        _cands = [x for x in got if _nd_key(_dump(x.get("vod_name"))) == _nd_key(name)][:12]
+        _cands = [x for x in got if _nd_key(_dump(x.get("vod_name"))) == _nd_key(name)][:6]
         if not _cands and got:
             _cands = got[:3]
         def _src_of(x):
@@ -27516,6 +27517,8 @@ def _replace_netdisk_lines(v):
                   and not re.match(r"^123(网盘|云盘|pan)?", _src_of(x), re.I)]
         # 并发取详情：原来串行 2~3 秒一条，6 条要十几秒；并发后只需 3 秒左右
         _dets = _pan_detail_many(sp, [_dump(x.get("vod_id")) for x in _cands])
+        if time.time() - _t0 > 8:
+            return v      # 超预算就放弃网盘线，详情页优先能打开
         _loose = []
         for _c, det in zip(_cands, _dets):
             if not det:
@@ -27662,7 +27665,7 @@ def _pan_search_cached(sp, name):
     return got
 
 
-def _pan_detail_many(sp, ids, workers=6):
+def _pan_detail_many(sp, ids, workers=4):
     ids = [x for x in ids if x]
     out = []
     todo = []
@@ -27677,7 +27680,7 @@ def _pan_detail_many(sp, ids, workers=6):
             import concurrent.futures as _cf
             with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
                 fut = {ex.submit(lambda i: ((sp.detailContent([i]) or {}).get("list") or [None])[0], i): i for i in todo}
-                for f in _cf.as_completed(fut, timeout=9):
+                for f in _cf.as_completed(fut, timeout=5):
                     i = fut[f]
                     try:
                         det = f.result()
@@ -27705,9 +27708,9 @@ def _install_pan_replacer():
             _r = _o(self, ids)
             try:
                 for _v in (_r.get("list") or []):
-                    # 网盘聚合那套要拉引擎 + 并发查 12 条详情，实测 40 秒以上，
-                    # 详情页直接超时；先只留木偶夸克线（有 3 秒预算）
-                    _panso_quark_lines(_v)
+                    _replace_netdisk_lines(_v)
+                    if _sw("panso", 0):
+                        _panso_quark_lines(_v)
             except Exception:
                 pass
             return _r
