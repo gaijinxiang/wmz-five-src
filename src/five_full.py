@@ -6784,8 +6784,8 @@ def _yt_parse(page_url):
     ids = YT_PARSE_IDS
     # 云盘直链只有 4K 解析通道能换链，先试它，省一轮失败
     if "ym4kjx" in page_url or "lyyytv.cn/d/" in page_url or "/d/file/" in page_url:
-        # 新接口实测：parsesId=2 能把这些死链修成带签名的移动云/联通云地址，其余通道必空
-        ids = (2,)
+        # 实测：parsesId=5 才出移动云/联通云真链（2 已失效），5 失败再退回 2/1
+        ids = (5, 2, 1)
     for pid in ids:
         api = YT_PARSE % (pid, quote(page_url, safe="!'()*"))
         try:
