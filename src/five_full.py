@@ -27387,7 +27387,13 @@ def _replace_netdisk_lines(v):
                     _src = ""
                 _parts = ["网盘"] + ([_src] if _src else []) + [f.replace("网盘·", "", 1)]
                 _lab = "·".join([x for x in _parts if x])
-                _panadd.append((_lab, u, f, _src))
+                _q = _line_q(u)
+                _low = _dump(u).lower() + _dump(f).lower()
+                if ".mp3" in _low or ".m4a" in _low or "播讲" in _low or "解说" in _low:
+                    continue      # 有声书/播讲不是正片
+                if _q in ("1080", "low"):
+                    continue      # 只要 4K，1080P/720P/480P 一律不显示
+                _panadd.append((_lab, u, f, _src, _q))
         # 集数对齐后，按"网盘类型"各留一条：夸克、UC、百度、迅雷、其它（最多 5 条）
         _TYPES = [("夸克", ("夸克", "quark")), ("UC", ("uc",)),
                   ("百度", ("百度", "baidu")), ("迅雷", ("迅雷", "xunlei")),
@@ -27409,7 +27415,8 @@ def _replace_netdisk_lines(v):
             arr = _bytype.get(nm) or []
             if not arr:
                 continue
-            arr.sort(key=lambda x: (0 if "无限" in x[2] else 1, 0 if x[3] else 1))
+            arr.sort(key=lambda x: (0 if (len(x) > 4 and x[4] == "4k") else 1,
+                                    0 if "无限" in x[2] else 1, 0 if x[3] else 1))
             _picked.append(arr[0])
         # 其它盘（欧歌/谷歌/阿里等互不相同时）多放两条，别只留一条
         _other = _bytype.get("其它") or []
@@ -27428,6 +27435,18 @@ def _replace_netdisk_lines(v):
     except Exception:
         pass
     return v
+
+
+def _line_q(u):
+    """按网盘线路里的文件名判断画质：4k / 1080 / low / 未知"""
+    txt = _dump(u).lower()
+    if "2160" in txt or "4k" in txt:
+        return "4k"
+    if "1080" in txt:
+        return "1080"
+    if re.search(r"(720p|480p|360p|80p|标清|高清)", txt):
+        return "low"
+    return ""
 
 
 def _ep_count(u):
