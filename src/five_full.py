@@ -27420,6 +27420,83 @@ def _qlist(code, stoken, pdir="0", depth=0, out=None):
     return out
 
 
+def _bd_list(surl, pwd=""):
+    """百度分享列目录（免登）：返回 [(name, fs_id, isdir)]"""
+    import urllib.request as _ur
+    q = {"shorturl": surl, "web": "5", "app_id": "250528", "desc": "1",
+         "showempty": "0", "page": "1", "num": "100", "order": "name"}
+    if pwd:
+        q["pwd"] = pwd
+    u = "https://pan.baidu.com/share/list?" + urllib.parse.urlencode(q)
+    req = _ur.Request(u, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                  "AppleWebKit/537.36 Chrome/120 Safari/537.36",
+                                  "Referer": "https://pan.baidu.com/"})
+    with _ur.urlopen(req, timeout=6) as r:
+        d = json.loads(r.read().decode("utf-8", "ignore"))
+    return d.get("list") or []
+
+
+def _panso_baidu_lines(v):
+    """详情页补「木偶·百度网盘」线：panso 搜百度分享 → 官方列集 → app 内 9978 代理播放。"""
+    try:
+        if not _sw("panso", 1):
+            return v
+        name = _dump(v.get("vod_name"))
+        if not name or any("木偶·百度" in _dump(f)
+                           for f in _dump(v.get("vod_play_from")).split("$$$")):
+            return v
+        key = "bd:" + name
+        hit = _QSESS.get(key)
+        if not hit or time.time() - hit[0] > 1800:
+            import urllib.request as _ur
+            req = _ur.Request(_PANSO + urllib.parse.quote(name),
+                              headers={"User-Agent": "okhttp/4.9.0"})
+            with _ur.urlopen(req, timeout=12) as r:
+                d = json.loads(r.read().decode("utf-8", "ignore"))
+            links = [x.get("url") for x in
+                     (((d.get("data") or {}).get("merged_by_type") or {}).get("baidu") or [])]
+            hit = (time.time(), links[:3])
+            _QSESS[key] = hit
+        froms = [x for x in _dump(v.get("vod_play_from")).split("$$$") if x]
+        urls = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
+        _t0 = time.time()
+        for lu in hit[1]:
+            if time.time() - _t0 > 3:
+                break
+            m = re.search(r"pan\.baidu\.com/s/1([A-Za-z0-9_-]+)", _dump(lu))
+            if not m:
+                continue
+            surl = m.group(1)
+            pwd = ""
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(_dump(lu)).query)
+            pwd = (q.get("pwd") or [""])[0]
+            try:
+                items = _bd_list(surl, pwd)
+            except Exception:
+                continue
+            files = []
+            for it in items:
+                nm = _dump(it.get("server_filename"))
+                if it.get("isdir"):
+                    continue
+                if re.search(r"\.(mp4|mkv|ts|avi|mov|flv|wmv)$", nm, re.I):
+                    files.append((nm, _dump(it.get("fs_id"))))
+            if len(files) < 2:
+                continue
+            files.sort(key=lambda x: x[0])
+            eps = ["第%d集$http://127.0.0.1:9978/proxy?do=pan&site=baidu&shareId=%s"
+                   "&fileId=%s&fileToken=" % (i + 1, surl, fid)
+                   for i, (nm, fid) in enumerate(files)]
+            froms.append("网盘·木偶·百度网盘%d集#%d" % (len(eps), len(froms) + 1))
+            urls.append("#".join(eps))
+            break
+        v["vod_play_from"] = "$$$".join(froms)
+        v["vod_play_url"] = "$$$".join(urls)
+    except Exception:
+        pass
+    return v
+
+
 def _panso_quark_lines(v):
     """详情页补「木偶·夸克」线：panso 搜分享 → 夸克官方接口列集 → 播放交给 app 内 9978 代理。"""
     try:
@@ -27710,9 +27787,7 @@ def _install_pan_replacer():
                 for _v in (_r.get("list") or []):
                     # 二选一：木偶线开着就别再跑网盘聚合（两套都跑详情必卡）
                     if _sw("panso", 0):
-                        _panso_quark_lines(_v)
-                    else:
-                        _replace_netdisk_lines(_v)
+                        _panso_baidu_lines(_v)
             except Exception:
                 pass
             return _r
