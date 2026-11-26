@@ -27373,6 +27373,110 @@ class _NoRedirect(__import__("urllib.request", fromlist=["HTTPRedirectHandler"])
         return None
 
 
+_QAPI = "https://drive-pc.quark.cn/1/clouddrive"
+_PANSO = "https://so.252035.xyz/api/search?kw="
+_QSESS = {}
+
+
+def _qck():
+    try:
+        ck = _dump((_QUARK_EXT_CONF or {}).get("quark_cookie")).strip()
+        return ck or _dump(_local_quark_cookie()).strip()
+    except Exception:
+        return ""
+
+
+def _qreq(url, ck, body=None):
+    import urllib.request as _ur
+    h = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+         "Referer": "https://pan.quark.cn/", "Content-Type": "application/json", "Cookie": ck}
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = _ur.Request(url, data=data, headers=h, method="POST" if data else "GET")
+    with _ur.urlopen(req, timeout=8) as r:
+        return json.loads(r.read().decode("utf-8", "ignore"))
+
+
+def _qlist(code, stoken, pdir="0", depth=0, out=None):
+    out = out if out is not None else []
+    try:
+        q = {"pr": "ucpro", "fr": "pc", "pwd_id": code, "stoken": stoken,
+             "pdir_fid": pdir, "force": "0", "_page": "1", "_size": "100",
+             "_fetch_share": "1", "_sort": "file_type:asc,file_name:asc"}
+        r = _qreq(_QAPI + "/share/sharepage/detail?" + urllib.parse.urlencode(q), _qck())
+        items = (r.get("data") or {}).get("list") or []
+    except Exception:
+        return out
+    for it in items:
+        if it.get("dir"):
+            if depth < 2:
+                _qlist(code, stoken, it.get("fid") or "0", depth + 1, out)
+            continue
+        nm = _dump(it.get("file_name"))
+        if not re.search(r"\.(mp4|mkv|ts|avi|mov|flv|wmv)$", nm, re.I):
+            continue
+        out.append((nm, _dump(it.get("fid")), _dump(it.get("share_fid_token"))))
+        if len(out) >= 60:
+            return out
+    return out
+
+
+def _panso_quark_lines(v):
+    """详情页补「木偶·夸克」线：panso 搜分享 → 夸克官方接口列集 → 播放交给 app 内 9978 代理。"""
+    try:
+        if not _sw("pan", 1):
+            return v
+        name = _dump(v.get("vod_name"))
+        ck = _qck()
+        if not name or not ck:
+            return v
+        if any("木偶·夸克" in _dump(f) for f in _dump(v.get("vod_play_from")).split("$$$")):
+            return v
+        key = "ps:" + name
+        hit = _QSESS.get(key)
+        if not hit or time.time() - hit[0] > 1800:
+            import urllib.request as _ur
+            req = _ur.Request(_PANSO + urllib.parse.quote(name),
+                              headers={"User-Agent": "okhttp/4.9.0"})
+            with _ur.urlopen(req, timeout=20) as r:
+                d = json.loads(r.read().decode("utf-8", "ignore"))
+            links = [x.get("url") for x in
+                     (((d.get("data") or {}).get("merged_by_type") or {}).get("quark") or [])]
+            hit = (time.time(), links[:6])
+            _QSESS[key] = hit
+        froms = [x for x in _dump(v.get("vod_play_from")).split("$$$") if x]
+        urls = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
+        for lu in hit[1]:
+            m = re.search(r"pan\.quark\.cn/s/([0-9a-fA-F]+)", _dump(lu))
+            if not m:
+                continue
+            code = m.group(1)
+            try:
+                tr = _qreq(_QAPI + "/share/sharepage/token?pr=ucpro&fr=pc", ck,
+                           {"pwd_id": code, "passcode": ""})
+                st = _dump(((tr.get("data") or {}).get("stoken")))
+            except Exception:
+                continue
+            if not st:
+                continue
+            files = _qlist(code, st)
+            if len(files) < 2:
+                continue
+            eps = []
+            for i, (nm, fid, ft) in enumerate(files):
+                pu = ("http://127.0.0.1:9978/proxy?do=pan&site=quark&shareId=%s"
+                      "&fileId=%s&fileToken=%s" % (code, fid, quote(ft, safe="")))
+                eps.append("第%d集$%s" % (i + 1, pu))
+            lab = "网盘·木偶·夸克无限%d集#%d" % (len(eps), len(froms) + 1)
+            froms.append(lab)
+            urls.append("#".join(eps))
+            break
+        v["vod_play_from"] = "$$$".join(froms)
+        v["vod_play_url"] = "$$$".join(urls)
+    except Exception:
+        pass
+    return v
+
+
 def _replace_netdisk_lines(v):
     try:
         if not _sw("pan", 1):
@@ -27606,6 +27710,7 @@ def _install_pan_replacer():
             try:
                 for _v in (_r.get("list") or []):
                     _replace_netdisk_lines(_v)
+                    _panso_quark_lines(_v)
             except Exception:
                 pass
             return _r
