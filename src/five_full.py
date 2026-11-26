@@ -12200,10 +12200,29 @@ def _wogg_search_vods(key, limit=2):
 
 
 
+
+def _sw(key, default=1):
+    """远程开关：switch.json 里 0 就关、1 就开；拉不到用 default"""
+    try:
+        if _SW_T[0] == 0 or time.time() - _SW_T[0] > 1800:
+            _SW_T[0] = time.time()
+            req = urllib.request.Request(_SW_URL, headers={"User-Agent": "okhttp/3.12.0"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                obj = json.loads(r.read().decode("utf-8", "ignore"))
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    try:
+                        _SW[k] = int(v)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return int(_SW.get(key, default)) != 0
+
 def _glm_chat(prompt, timeout=20):
     """智谱免费模型：模型忙时(429)自动退避重试，并换 glm-4-flash 兜底"""
     key = (_GLM_KEY or "").strip()
-    if not key:
+    if not key or not _sw("ai", 1):
         return ""
     body_base = {"messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
     for model in ("glm-4.7-flash", "glm-4-flash"):
@@ -24929,6 +24948,9 @@ NETDISK_LINE_CACHE = {}
 NETDISK_LINES_CACHE = {}   # 已算好的最终网盘线路
 VOD_NAME_MAP = {}
 _GLM_KEY = ""
+_SW = {"pan": 1, "ai": 1}
+_SW_URL = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/switch.json"
+_SW_T = [0]
 _GLM_CACHE = {}          # 搜索结果 vod_id -> 片名，详情页开场就并行预取网盘
 VOD_EPS_MAP = {}           # 搜索结果 vod_id -> 正片集数，快映预热用
 
@@ -27304,6 +27326,8 @@ def _pan_engine():
 
 def _replace_netdisk_lines(v):
     try:
+        if not _sw("pan", 1):
+            return v
         name = _dump(v.get("vod_name"))
         if not name:
             return v
