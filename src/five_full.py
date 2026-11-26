@@ -15403,7 +15403,7 @@ def detail_content(ids):
         # 优酷名下只留官方线：云盘那条不再改名叫「优酷·4K云」
         _keep_uk = [i for i, f in enumerate(froms)
                     if "优酷" not in _dump(f)
-                    or _dump(f).startswith(("优酷·官方", "优酷·720P"))]
+                    or _dump(f).startswith(("优酷·官方", "优酷官方", "优酷·1080"))]
         if len(_keep_uk) < len(froms):
             froms = [froms[i] for i in _keep_uk]
             urls = [urls[i] for i in _keep_uk]
