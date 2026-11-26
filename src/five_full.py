@@ -27327,9 +27327,50 @@ def _pan_engine():
     _ns = {"__name__": "pan_agg_inner", "__file__": __file__}
     exec(compile(_txt, "pan_agg_inner.py", "exec"), _ns)
     _sp = _ns["Spider"]()
-    _sp.init("{}")
+    # 必须把配置里的夸克/UC 登录 Cookie 传给网盘引擎，否则「夸克无限」线路一律获取失败
+    _ck = _dump((_QUARK_EXT_CONF or {}).get("quark_cookie")).strip() or _dump(_local_quark_cookie()).strip()
+    _uc = _dump((_QUARK_EXT_CONF or {}).get("uc_cookie")).strip()
+    _sp.init(json.dumps({"quark_cookie": _ck, "uc_cookie": _uc}, ensure_ascii=False))
     _PAN_ENGINE["sp"] = _sp
     return _sp
+
+
+_PAN_ALIVE = {}
+
+
+def _pan_alive(flag, u):
+    """拿网盘聚合自己解析第 1 集，看真链还在不在（302 到广告页/404 判死）。"""
+    try:
+        key = flag + "|" + _dump(u)[:60]
+        hit = _PAN_ALIVE.get(key)
+        if hit and time.time() - hit[0] < 300:
+            return hit[1]
+        parts = [x for x in _dump(u).split("#") if "$" in x]
+        if not parts:
+            return False
+        tok = parts[0].split("$", 1)[1]
+        r = _pan_engine().playerContent(flag, tok, "")
+        url = _dump((r or {}).get("url"))
+        ok = False
+        if url.startswith("http") and not _is_page_like(url):
+            try:
+                import urllib.request as _ur
+                req = _ur.Request(url, headers={"User-Agent": "okhttp/3.12.0"})
+                resp = _ur.urlopen(req, timeout=6)
+                final = _dump(getattr(resp, "url", url)).lower()
+                ok = (resp.status in (200, 206)) and ("aibox.eu.org" not in final) \
+                     and ("/110" not in final.rsplit("/", 1)[-1][:4])
+            except Exception:
+                ok = False
+        _PAN_ALIVE[key] = (time.time(), ok)
+        return ok
+    except Exception:
+        return False
+
+
+class _NoRedirect(__import__("urllib.request", fromlist=["HTTPRedirectHandler"]).HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _replace_netdisk_lines(v):
@@ -27358,7 +27399,7 @@ def _replace_netdisk_lines(v):
         got = _pan_search_cached(sp, _nm2)
         _seen_line = set()
         _panadd = []
-        _cands = [x for x in got if _nd_key(_dump(x.get("vod_name"))) == _nd_key(name)][:8]
+        _cands = [x for x in got if _nd_key(_dump(x.get("vod_name"))) == _nd_key(name)][:12]
         if not _cands and got:
             _cands = got[:3]
         def _src_of(x):
@@ -27438,13 +27479,21 @@ def _replace_netdisk_lines(v):
                 _panadd.append((_lab, u, f, _src, _q))
                 break
         _picked = []
+        _rk = {"4k": 0, "1080": 1, "": 2}
         for nm, _kws in _TYPES:
             arr = _bytype.get(nm) or []
             if not arr:
                 continue
-            _rk = {"4k": 0, "1080": 1, "": 2}
             arr.sort(key=lambda x: (_rk.get(x[4], 3), 0 if "无限" in x[2] else 1, 0 if x[3] else 1))
-            _picked.append(arr[0])
+            # 挨个验第 1 集，优先留真能播的，别把死链顶到最上面
+            _use = None
+            for _x in arr[:4]:
+                if _pan_alive(_x[2], _x[1]):
+                    _use = _x
+                    break
+            if _use is None:
+                continue      # 这一档全是死链，宁可不显示，也不给用户一条点了就失败的线
+            _picked.append(_use)
         # 其它盘（欧歌/谷歌/阿里等互不相同时）多放两条，别只留一条
         _other = _bytype.get("其它") or []
         if len(_other) > 1:
@@ -27513,7 +27562,7 @@ def _pan_search_cached(sp, name):
     return got
 
 
-def _pan_detail_many(sp, ids, workers=4):
+def _pan_detail_many(sp, ids, workers=6):
     ids = [x for x in ids if x]
     out = []
     todo = []
@@ -27528,7 +27577,7 @@ def _pan_detail_many(sp, ids, workers=4):
             import concurrent.futures as _cf
             with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
                 fut = {ex.submit(lambda i: ((sp.detailContent([i]) or {}).get("list") or [None])[0], i): i for i in todo}
-                for f in _cf.as_completed(fut, timeout=6):
+                for f in _cf.as_completed(fut, timeout=9):
                     i = fut[f]
                     try:
                         det = f.result()
