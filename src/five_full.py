@@ -27392,7 +27392,7 @@ def _qreq(url, ck, body=None):
          "Referer": "https://pan.quark.cn/", "Content-Type": "application/json", "Cookie": ck}
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = _ur.Request(url, data=data, headers=h, method="POST" if data else "GET")
-    with _ur.urlopen(req, timeout=8) as r:
+    with _ur.urlopen(req, timeout=5) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 
@@ -27408,7 +27408,7 @@ def _qlist(code, stoken, pdir="0", depth=0, out=None):
         return out
     for it in items:
         if it.get("dir"):
-            if depth < 2:
+            if depth < 1:
                 _qlist(code, stoken, it.get("fid") or "0", depth + 1, out)
             continue
         nm = _dump(it.get("file_name"))
@@ -27441,11 +27441,14 @@ def _panso_quark_lines(v):
                 d = json.loads(r.read().decode("utf-8", "ignore"))
             links = [x.get("url") for x in
                      (((d.get("data") or {}).get("merged_by_type") or {}).get("quark") or [])]
-            hit = (time.time(), links[:6])
+            hit = (time.time(), links[:3])
             _QSESS[key] = hit
         froms = [x for x in _dump(v.get("vod_play_from")).split("$$$") if x]
         urls = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
+        _t0 = time.time()
         for lu in hit[1]:
+            if time.time() - _t0 > 5:
+                break      # 详情页不能为了网盘线卡住，超预算就放弃
             m = re.search(r"pan\.quark\.cn/s/([0-9a-fA-F]+)", _dump(lu))
             if not m:
                 continue
@@ -27458,7 +27461,7 @@ def _panso_quark_lines(v):
                 continue
             if not st:
                 continue
-            files = _qlist(code, st)
+            files = _qlist(code, st, depth=0)
             if len(files) < 2:
                 continue
             eps = []
@@ -27590,14 +27593,7 @@ def _replace_netdisk_lines(v):
                 continue
             arr.sort(key=lambda x: (_rk.get(x[4], 3), 0 if "无限" in x[2] else 1, 0 if x[3] else 1))
             # 挨个验第 1 集，优先留真能播的，别把死链顶到最上面
-            _use = None
-            for _x in arr[:4]:
-                if _pan_alive(_x[2], _x[1]):
-                    _use = _x
-                    break
-            if _use is None:
-                continue      # 这一档全是死链，宁可不显示，也不给用户一条点了就失败的线
-            _picked.append(_use)
+            _picked.append(arr[0])
         # 其它盘（欧歌/谷歌/阿里等互不相同时）多放两条，别只留一条
         _other = _bytype.get("其它") or []
         if len(_other) > 1:
