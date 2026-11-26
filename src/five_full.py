@@ -27708,9 +27708,11 @@ def _install_pan_replacer():
             _r = _o(self, ids)
             try:
                 for _v in (_r.get("list") or []):
-                    _replace_netdisk_lines(_v)
+                    # 二选一：木偶线开着就别再跑网盘聚合（两套都跑详情必卡）
                     if _sw("panso", 0):
                         _panso_quark_lines(_v)
+                    else:
+                        _replace_netdisk_lines(_v)
             except Exception:
                 pass
             return _r
