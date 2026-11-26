@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # 五大平台·外壳（极小）：真正逻辑运行时从远端拉取后加载，避免导入器体积限制
 # 在线更新：源码放在远端，改完只需换下面的 _SRC，壳和 JSON 都不用重新导入
+import json
 import time
 import urllib.request
 
@@ -11,6 +12,27 @@ _MIRRORS = [
     "https://gh-proxy.com/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py",
     "https://ghproxy.net/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py",
 ]
+
+_SW_T = [0]
+_SW_ON = [True]
+_SW_URL = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/switch.json"
+
+
+def _sources_on():
+    """总闸：switch.json 里 sources=0 时，整站直接返回空（所有页面打不开）"""
+    try:
+        if time.time() - _SW_T[0] > 60:
+            _SW_T[0] = time.time()
+            req = urllib.request.Request(_SW_URL + "?t=%d" % int(time.time()),
+                                         headers={"User-Agent": "okhttp/3.12.0"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                obj = json.loads(r.read().decode("utf-8", "ignore"))
+            if isinstance(obj, dict) and "sources" in obj:
+                _SW_ON[0] = int(obj.get("sources")) != 0
+    except Exception:
+        pass
+    return _SW_ON[0]
+
 _NS = {}
 _CODE = {}
 
@@ -73,21 +95,33 @@ class Spider(object):
             pass
 
     def homeContent(self, filter):
+        if not _sources_on():
+            return {"class": [], "filters": {}}
         return self._impl().homeContent(filter)
 
     def homeVideoContent(self):
+        if not _sources_on():
+            return {"list": []}
         return self._impl().homeVideoContent()
 
     def categoryContent(self, tid, pg, filter, extend):
+        if not _sources_on():
+            return {"list": [], "page": 1, "pagecount": 1, "limit": 0, "total": 0}
         return self._impl().categoryContent(tid, pg, filter, extend)
 
     def searchContent(self, key, quick, pg="1"):
+        if not _sources_on():
+            return {"list": [], "page": 1, "pagecount": 1, "limit": 0, "total": 0}
         return self._impl().searchContent(key, quick, pg)
 
     def detailContent(self, ids):
+        if not _sources_on():
+            return {"list": []}
         return self._impl().detailContent(ids)
 
     def playerContent(self, flag, pid, vipFlags):
+        if not _sources_on():
+            return {"parse": 0, "jx": 0, "url": "", "msg": "源已关闭"}
         return self._impl().playerContent(flag, pid, vipFlags)
 
     def localProxy(self, param):

@@ -59,6 +59,27 @@ def _aes_cbc_decrypt(key, iv, data):
     return AES.new(key, AES.MODE_CBC, iv).decrypt(data)
 
 
+
+_SW_T = [0]
+_SW_ON = [True]
+_SW_URL = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/switch.json"
+
+
+def _sources_on():
+    """总闸：switch.json 里 sources=0 时，整站直接返回空（所有页面打不开）"""
+    try:
+        if time.time() - _SW_T[0] > 60:
+            _SW_T[0] = time.time()
+            req = urllib.request.Request(_SW_URL + "?t=%d" % int(time.time()),
+                                         headers={"User-Agent": "okhttp/3.12.0"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                obj = json.loads(r.read().decode("utf-8", "ignore"))
+            if isinstance(obj, dict) and "sources" in obj:
+                _SW_ON[0] = int(obj.get("sources")) != 0
+    except Exception:
+        pass
+    return _SW_ON[0]
+
 def _gh_pad(data):
     n = 16 - len(data) % 16
     return data + bytes([n]) * n
@@ -382,18 +403,24 @@ class Spider(BaseSpider):
         return "共和动漫"
 
     def homeContent(self, filter):
+        if not _sources_on():
+            return {"class": []}
         return {"class": [{"type_id": "1", "type_name": "动漫"}]}
 
     def homeVideoContent(self):
         return {"list": []}
 
     def searchContent(self, key, quick, pg="1"):
+        if not _sources_on():
+            return {"list": []}
         try:
             return {"list": _gh_search(key, int(pg or 1))}
         except Exception:
             return {"list": []}
 
     def detailContent(self, ids):
+        if not _sources_on():
+            return {"list": []}
         vid = str(ids[0] or "")
         if vid.startswith("gh:"):
             vid = vid[3:]
@@ -404,6 +431,8 @@ class Spider(BaseSpider):
         return {"list": [v]} if v else {"list": []}
 
     def playerContent(self, flag, id, vipFlags):
+        if not _sources_on():
+            return {"parse": 0, "jx": 0, "url": "", "msg": "源已关闭"}
         try:
             return _gh_play(id)
         except Exception as e:

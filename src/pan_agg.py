@@ -3,6 +3,27 @@
 import re, json, html, urllib.request, urllib.parse
 
 _SRC = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/pan_engine.py"
+
+_SW_T = [0]
+_SW_ON = [True]
+_SW_URL = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/switch.json"
+
+
+def _sources_on():
+    """总闸：switch.json 里 sources=0 时，整站直接返回空（所有页面打不开）"""
+    try:
+        if time.time() - _SW_T[0] > 60:
+            _SW_T[0] = time.time()
+            req = urllib.request.Request(_SW_URL + "?t=%d" % int(time.time()),
+                                         headers={"User-Agent": "okhttp/3.12.0"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                obj = json.loads(r.read().decode("utf-8", "ignore"))
+            if isinstance(obj, dict) and "sources" in obj:
+                _SW_ON[0] = int(obj.get("sources")) != 0
+    except Exception:
+        pass
+    return _SW_ON[0]
+
 _NS = {}
 _PIC = {}
 _HOST = "https://www.xmfyy.com"
@@ -189,23 +210,31 @@ class Spider(object):
         self._impl().init(extend)
 
     def homeContent(self, filter):
+        if not _sources_on():
+            return {"class": [], "filters": {}}
         r = self._impl().homeContent(filter)
         _fill((r or {}).get("list") or [])
         return r
 
     def homeVideoContent(self):
+        if not _sources_on():
+            return {"list": []}
         r = self._impl().homeVideoContent()
         _drop((r or {}).get("list") or [])
         _fill((r or {}).get("list") or [])
         return r
 
     def categoryContent(self, tid, pg, filter, extend):
+        if not _sources_on():
+            return {"list": [], "page": 1, "pagecount": 1, "limit": 0, "total": 0}
         r = self._impl().categoryContent(tid, pg, filter, extend)
         _drop((r or {}).get("list") or [])
         _fill((r or {}).get("list") or [])
         return r
 
     def searchContent(self, key, quick, pg="1"):
+        if not _sources_on():
+            return {"list": [], "page": 1, "pagecount": 1, "limit": 0, "total": 0}
         r = self._impl().searchContent(key, quick, pg)
         items = (r or {}).get("list") or []
         _drop(items)
@@ -224,6 +253,8 @@ class Spider(object):
         return r
 
     def detailContent(self, ids):
+        if not _sources_on():
+            return {"list": []}
         r = self._impl().detailContent(ids)
         try:
             for v in (r or {}).get("list") or []:
@@ -236,6 +267,8 @@ class Spider(object):
         return r
 
     def playerContent(self, flag, pid, vipFlags):
+        if not _sources_on():
+            return {"parse": 0, "jx": 0, "url": "", "msg": "源已关闭"}
         return self._impl().playerContent(flag, pid, vipFlags)
 
     def localProxy(self, param):
