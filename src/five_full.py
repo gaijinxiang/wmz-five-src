@@ -6395,21 +6395,26 @@ def _iq_web_parse(page_url, force=False):
         if _hit and _hit[0] > time.time() and _hit[1]:
             return _hit[1]
     found = ""
-    _tries = 3 if force else 2
-    for _i in range(_tries):
+    _ids = (3, 1, 2, 3, 1) if force else (3, 1, 2)
+    for _i, _pid in enumerate(_ids):
         try:
             _base = IQWEB_API if (_i % 2 == 0) else IQWEB_API_HTTP
-            api = _base + quote(page_url, safe="") + "&parsesId=1"
+            api = _base + quote(page_url, safe="") + "&parsesId=%d" % _pid
             body = _http_text(api, {"User-Agent": "okhttp/4.12.0",
                                     "Referer": "https://www.iqiyi.com/",
                                     "Accept-Encoding": "identity"}, 7)
             url = _yt_unwrap(body)
-            if url and not _is_page_like(url) and _yt_alive(url):
-                found = url
-                break
+            if url and not _is_page_like(url):
+                # 69mzf 短链只有 6 秒，本地当场抓清单即可，不再二次验活浪费窗口
+                if "69mzf" in url:
+                    found = url
+                    break
+                if _yt_alive(url):
+                    found = url
+                    break
         except Exception:
             pass
-        if _i + 1 < _tries:
+        if _i + 1 < len(_ids):
             time.sleep(0.4)
     # 成功缓存 15 分钟；失败只缓存 8 秒，下一集/下一次播放马上能重新解析
     IQWEB_CACHE[page_url] = (time.time() + (900 if found else 8), found)
@@ -16008,7 +16013,8 @@ def play_content(play_id, flag=""):
             # 不要再给 127.0.0.1 本地清单：壳会把带 header 的地址再套一层
             # http://127.0.0.1:10080 代理，代理慢一步清单就过期，第一集必黑。
             # 实测爱奇艺清单和分片直连不需要 Referer/Cookie，直接给 CDN 清单最稳。
-            return {"parse": 0, "jx": 0, "url": found,
+            _loc = _iq_local_play(_page)
+            return {"parse": 0, "jx": 0, "url": _loc or found,
                     "format": "m3u8", "quality": "1080P"}
         # 4kzj 抽风时用 oxapi 兜底：爱奇艺默认档给的是可直接播的 mp4（约 720P），
         # 比把官方页丢给壳再解析稳，至少第一集能出流。
@@ -27391,8 +27397,8 @@ def _replace_netdisk_lines(v):
                 _low = _dump(u).lower() + _dump(f).lower()
                 if ".mp3" in _low or ".m4a" in _low or "播讲" in _low or "解说" in _low:
                     continue      # 有声书/播讲不是正片
-                if _q in ("1080", "low"):
-                    continue      # 只要 4K，1080P/720P/480P 一律不显示
+                if _q != "4k":
+                    continue      # 只认 4K：1080P/720P/480P/看不出画质的一律不显示
                 _panadd.append((_lab, u, f, _src, _q))
         # 集数对齐后，按"网盘类型"各留一条：夸克、UC、百度、迅雷、其它（最多 5 条）
         _TYPES = [("夸克", ("夸克", "quark")), ("UC", ("uc",)),
