@@ -1931,7 +1931,17 @@ class Spider:
     def playerContent(self, flag, id, vipFlags):
         try:
             if _dump(flag) in _PAN_FLAG_MAP:
-                return _pan_engine().playerContent(_PAN_FLAG_MAP[_dump(flag)], id, vipFlags)
+                _r = _pan_engine().playerContent(_PAN_FLAG_MAP[_dump(flag)], id, vipFlags)
+                # 夸克游客直链单连接只有 0.1MB/s；改走壳的 9978 多线程代理，边下载边吐流
+                _u = _dump((_r or {}).get("url"))
+                if _u.startswith("http") and "pan.quark" not in _u and "127.0.0.1" not in _u:
+                    try:
+                        _w = "http://127.0.0.1:9978/proxy?url=%s&thread=12&chunk=1048576&key=quark&type=quark" % quote(_u, safe="")
+                        _r["url"] = _w
+                        _r["header"] = {"User-Agent": "okhttp/3.12.0"}
+                    except Exception:
+                        pass
+                return _r
         except Exception:
             pass
         _sid = str(id)
