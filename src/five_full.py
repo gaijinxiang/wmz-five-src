@@ -12199,6 +12199,57 @@ def _wogg_search_vods(key, limit=2):
         return []
 
 
+
+def _glm_chat(prompt, timeout=12):
+    """调用智谱免费模型 GLM-4.7-Flash；没配置 key 就直接返回空"""
+    key = (_GLM_KEY or "").strip()
+    if not key:
+        return ""
+    try:
+        body = json.dumps({
+            "model": "glm-4.7-flash",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+        }).encode()
+        req = urllib.request.Request(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            data=body,
+            headers={"Authorization": "Bearer " + key,
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            obj = json.loads(r.read().decode("utf-8", "ignore"))
+        return (obj.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    except Exception:
+        return ""
+
+
+def _glm_fix(name):
+    """把乱七八糟的搜索词/长标题整理成纯片名 + 集数，失败就原样返回"""
+    t = _dump(name).strip()
+    if not t:
+        return {"title": "", "eps": 0}
+    if t in _GLM_CACHE:
+        return _GLM_CACHE[t]
+    out = {"title": t, "eps": 0}
+    ans = _glm_chat("把下面的影视标题整理成JSON，只输出JSON，不要解释。"
+                    "字段：title（纯片名，去掉画质/更新集数/年份/演员/标签等修饰）、"
+                    "eps（总集数，没有就0）。标题：" + t)
+    try:
+        m = re.search(r"\{[\s\S]*\}", ans)
+        if m:
+            o = json.loads(m.group(0))
+            ti = _dump(o.get("title"))
+            if ti:
+                out["title"] = ti
+            try:
+                out["eps"] = int(o.get("eps") or 0)
+            except Exception:
+                out["eps"] = 0
+    except Exception:
+        pass
+    _GLM_CACHE[t] = out
+    return out
+
 def search_content(key, pg):
     key = _dump(key)
     page = _page_of(pg)
@@ -23788,6 +23839,10 @@ class _AggSpider(BaseSpider):
         except Exception:
             ext = {}
         # 夸克/UC 默认仍走匿名免登；只有「快映」这条线读本地配置中心的夸克登录态
+        try:
+            globals()["_GLM_KEY"] = str(ext.get("glm_key") or "").strip()
+        except Exception:
+            pass
         self.uc = UCDrive("")
         self.quark = QuarkDrive("")
         self.quark80 = QuarkDrive(_local_quark_cookie())
@@ -24868,7 +24923,9 @@ def _agg_play(token, flag_hint=""):
 
 NETDISK_LINE_CACHE = {}
 NETDISK_LINES_CACHE = {}   # 已算好的最终网盘线路
-VOD_NAME_MAP = {}          # 搜索结果 vod_id -> 片名，详情页开场就并行预取网盘
+VOD_NAME_MAP = {}
+_GLM_KEY = ""
+_GLM_CACHE = {}          # 搜索结果 vod_id -> 片名，详情页开场就并行预取网盘
 VOD_EPS_MAP = {}           # 搜索结果 vod_id -> 正片集数，快映预热用
 
 
@@ -26921,6 +26978,13 @@ class DoubanSpider(BaseSpider):
     def searchContent(self, key, quick, pg="1"):
         res = search_content(key, pg)
         try:
+            if not (res or {}).get("list"):
+                fx = _glm_fix(key)
+                if fx.get("title") and fx["title"] != _dump(key):
+                    res = search_content(fx["title"], pg)
+        except Exception:
+            pass
+        try:
             for v in (res.get("list") or []):
                 _vid = _dump(v.get("vod_id"))
                 _vn = _dump(v.get("vod_name"))
@@ -27248,7 +27312,14 @@ def _replace_netdisk_lines(v):
         if _cs:
             _main_eps = sorted(_cs, key=lambda x: (_cs.count(x), x))[-1]
         sp = _pan_engine()
-        got = _pan_search_cached(sp, name)
+        _nm2 = name
+        try:
+            _fx = _glm_fix(name)
+            if _fx.get("title"):
+                _nm2 = _fx["title"]
+        except Exception:
+            pass
+        got = _pan_search_cached(sp, _nm2)
         _seen_line = set()
         _panadd = []
         _cands = [x for x in got if _nd_key(_dump(x.get("vod_name"))) == _nd_key(name)][:8]
