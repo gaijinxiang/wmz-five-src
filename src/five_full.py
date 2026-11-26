@@ -12217,6 +12217,8 @@ def _sw(key, default=1):
                         pass
     except Exception:
         pass
+    if int(_SW.get("all", 1)) == 0:
+        return False          # 总开关：一关全关
     return int(_SW.get(key, default)) != 0
 
 def _glm_chat(prompt, timeout=20):
@@ -24948,7 +24950,7 @@ NETDISK_LINE_CACHE = {}
 NETDISK_LINES_CACHE = {}   # 已算好的最终网盘线路
 VOD_NAME_MAP = {}
 _GLM_KEY = ""
-_SW = {"pan": 1, "ai": 1}
+_SW = {"all": 1, "pan": 1, "ai": 1}
 _SW_URL = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/switch.json"
 _SW_T = [0]
 _GLM_CACHE = {}          # 搜索结果 vod_id -> 片名，详情页开场就并行预取网盘
