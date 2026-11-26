@@ -27392,7 +27392,7 @@ def _qreq(url, ck, body=None):
          "Referer": "https://pan.quark.cn/", "Content-Type": "application/json", "Cookie": ck}
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = _ur.Request(url, data=data, headers=h, method="POST" if data else "GET")
-    with _ur.urlopen(req, timeout=5) as r:
+    with _ur.urlopen(req, timeout=4) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 
@@ -27447,7 +27447,7 @@ def _panso_quark_lines(v):
         urls = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
         _t0 = time.time()
         for lu in hit[1]:
-            if time.time() - _t0 > 5:
+            if time.time() - _t0 > 3:
                 break      # 详情页不能为了网盘线卡住，超预算就放弃
             m = re.search(r"pan\.quark\.cn/s/([0-9a-fA-F]+)", _dump(lu))
             if not m:
@@ -27705,7 +27705,8 @@ def _install_pan_replacer():
             _r = _o(self, ids)
             try:
                 for _v in (_r.get("list") or []):
-                    _replace_netdisk_lines(_v)
+                    # 网盘聚合那套要拉引擎 + 并发查 12 条详情，实测 40 秒以上，
+                    # 详情页直接超时；先只留木偶夸克线（有 3 秒预算）
                     _panso_quark_lines(_v)
             except Exception:
                 pass
