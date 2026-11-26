@@ -5,17 +5,19 @@ import json
 import time
 import urllib.request
 
-_SRC = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py"
-# 备用镜像：主地址挂了/过期就依次尝试
+_RAW = "https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py"
+# 实测 ghfast 拉 1.4MB 要 20 秒以上，壳会判超时；gh-proxy 只要 3 秒，放第一位
+_SRC = "https://gh-proxy.com/" + _RAW
 _MIRRORS = [
     _SRC,
-    "https://gh-proxy.com/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py",
-    "https://ghproxy.net/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py",
+    "https://ghfast.top/" + _RAW,
+    "https://ghproxy.net/" + _RAW,
+    "https://wget.la/raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py",
 ]
 
 _SW_T = [0]
 _SW_ON = [True]
-_SW_URL = "https://ghfast.top/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/switch.json"
+_SW_URL = "https://gh-proxy.com/" + _RAW.replace("five_full.py", "switch.json")
 
 
 def _sources_on():
@@ -44,7 +46,7 @@ def _fetch(url):
                 "User-Agent": "okhttp/3.12.0",
                 "Accept": "*/*",
             })
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=45) as r:
                 raw = r.read()
             if raw and len(raw) > 2000:
                 return raw.decode("utf-8", "ignore")
