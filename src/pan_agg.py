@@ -106,6 +106,43 @@ def _drop(items):
     return items
 
 
+
+_GLM_KEY = ""
+_NAME_CACHE = {}
+
+
+def _tidy_name(t):
+    t = _clean(t)
+    t = re.sub(r"[【\[][^】\]]*[】\]]", " ", t)
+    t = re.sub(r"（[^）]*）|\([^)]*\)", " ", t)
+    t = re.sub(r"\b(4K|8K|1080P|2160P|HDR|高清|蓝光|国语|中字|中文字幕|WEB-DL|HDTV|NF|内封|简中|更至|更新至)\b", " ", t, flags=re.I)
+    t = re.sub(r"(更|更新|更新至|全|更至)\s*(EP|E)?\s*[0-9]+\s*(集|话)?(完结)?", " ", t, flags=re.I)
+    t = re.sub(r"0?4K|8K|内封|简中|国语|中字|高码率|高码|臻彩|蓝光|HDR", " ", t, flags=re.I)
+    t = re.sub(r"[0-9]+\s*集(全|完结)?", " ", t)
+    t = re.sub(r"第[一二三四五六七八九十0-9]+季", " ", t)
+    t = re.sub(r"[·|/\\:：\-—_]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _name_ok(key, name):
+    k = _tidy_name(key)
+    n = _tidy_name(name)
+    if not k or not n:
+        return True
+    k2 = re.sub(r"\s+", "", k)
+    n2 = re.sub(r"\s+", "", n)
+    if k2 in n2 or n2 in k2:
+        return True
+    # 去掉季数/第二部分再比
+    k3 = re.sub(r"第[一二三四五六七八九十0-9]+季|第[一二三四五六七八九十0-9]+部", "", k2)
+    n3 = re.sub(r"第[一二三四五六七八九十0-9]+季|第[一二三四五六七八九十0-9]+部", "", n2)
+    if len(k3) >= 2 and k3 in n3:
+        return True
+    # 都取前两个字判断（防"两京十五日"对"两京十五日(臻彩)"这类）
+    return bool(k3[:2] and k3[:2] in n3 and len(k3) >= 3)
+
+
 def _fill(items):
     try:
         import concurrent.futures as _cf
@@ -170,8 +207,20 @@ class Spider(object):
 
     def searchContent(self, key, quick, pg="1"):
         r = self._impl().searchContent(key, quick, pg)
-        _drop((r or {}).get("list") or [])
-        _fill((r or {}).get("list") or [])
+        items = (r or {}).get("list") or []
+        _drop(items)
+        try:
+            items[:] = [x for x in items if _name_ok(key, x.get("vod_name"))]
+        except Exception:
+            pass
+        for x in items:
+            try:
+                nm = _tidy_name(x.get("vod_name"))
+                if nm and len(nm) <= len(_clean(x.get("vod_name"))):
+                    x["vod_name"] = nm
+            except Exception:
+                pass
+        _fill(items)
         return r
 
     def detailContent(self, ids):
