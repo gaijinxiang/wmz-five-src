@@ -498,6 +498,8 @@ class Spider:
     def _muppet_plain(self, vod, key):
         """不依赖聚合客户端：直连木偶镜像搜索，详情页解析网盘链接并逐集展开。"""
         try:
+            if _sw("panso", 0):
+                return      # 木偶直连这套要连站点+解析详情，详情页必卡；改用 panso 夸克线
             _cfg = next((x for x in SITES if _dump(x.get("id")) == "木偶"), None)
             if not _cfg:
                 return
@@ -27785,9 +27787,15 @@ def _install_pan_replacer():
             _r = _o(self, ids)
             try:
                 for _v in (_r.get("list") or []):
-                    # 二选一：木偶线开着就别再跑网盘聚合（两套都跑详情必卡）
-                    if _sw("panso", 0):
-                        _panso_quark_lines(_v)
+                    # 网盘聚合彻底停用（它一条线要拉引擎+查详情，详情页必卡）；
+                    # 只补木偶夸克线，3 秒预算，超时直接放行
+                    _panso_quark_lines(_v)
+                    _fs = [x for x in _dump(_v.get("vod_play_from")).split("$$$") if x]
+                    _us = [x for x in _dump(_v.get("vod_play_url")).split("$$$") if x]
+                    if len(_fs) == len(_us) and any("木偶" in _dump(f) for f in _fs):
+                        _k = [(f, u) for f, u in zip(_fs, _us) if "木偶" not in _dump(f)]
+                        _v["vod_play_from"] = "$$$".join(f for f, _ in _k)
+                        _v["vod_play_url"] = "$$$".join(u for _, u in _k)
             except Exception:
                 pass
             return _r
