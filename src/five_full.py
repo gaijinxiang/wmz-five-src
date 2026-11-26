@@ -12200,27 +12200,31 @@ def _wogg_search_vods(key, limit=2):
 
 
 
-def _glm_chat(prompt, timeout=12):
-    """调用智谱免费模型 GLM-4.7-Flash；没配置 key 就直接返回空"""
+def _glm_chat(prompt, timeout=20):
+    """智谱免费模型：模型忙时(429)自动退避重试，并换 glm-4-flash 兜底"""
     key = (_GLM_KEY or "").strip()
     if not key:
         return ""
-    try:
-        body = json.dumps({
-            "model": "glm-4.7-flash",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-        }).encode()
-        req = urllib.request.Request(
-            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-            data=body,
-            headers={"Authorization": "Bearer " + key,
-                     "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            obj = json.loads(r.read().decode("utf-8", "ignore"))
-        return (obj.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-    except Exception:
-        return ""
+    body_base = {"messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
+    for model in ("glm-4.7-flash", "glm-4-flash"):
+        for attempt in range(3):
+            try:
+                body = dict(body_base)
+                body["model"] = model
+                req = urllib.request.Request(
+                    "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                    data=json.dumps(body).encode(),
+                    headers={"Authorization": "Bearer " + key,
+                             "Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    obj = json.loads(r.read().decode("utf-8", "ignore"))
+                txt = (obj.get("choices") or [{}])[0].get("message", {}).get("content", "")
+                if txt:
+                    return txt
+            except Exception:
+                if attempt < 2:
+                    time.sleep(1.2)
+    return ""
 
 
 def _glm_fix(name):
