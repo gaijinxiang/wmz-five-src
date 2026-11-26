@@ -12206,7 +12206,7 @@ def _sw(key, default=1):
     try:
         if _SW_T[0] == 0 or time.time() - _SW_T[0] > 1800:
             _SW_T[0] = time.time()
-            req = urllib.request.Request(_SW_URL, headers={"User-Agent": "okhttp/3.12.0"})
+            req = urllib.request.Request(_SW_URL + "?t=%d" % int(time.time()), headers={"User-Agent": "okhttp/3.12.0"})
             with urllib.request.urlopen(req, timeout=5) as r:
                 obj = json.loads(r.read().decode("utf-8", "ignore"))
             if isinstance(obj, dict):
