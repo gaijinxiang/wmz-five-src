@@ -31424,15 +31424,15 @@ class Spider(XMFCore):
                     if _one_share:
                         _q_.put(('指定·网盘·百度网盘', _one_share, 0))
                         return
-                    for _tag, _f, _u in _nd_baidu_shares(_nm_bd, 5.0)[:5]:
-                        _q_.put(('%s·网盘·百度网盘' % _tag, _u, 0))
+                    # 双星优先：手机网络能开就是最稳的一条来源
                     try:
                         for (_sl, _su), _se in _sx_baidu_shares(_nm_bd, 7.0)[:6]:
                             _q_.put((_sl, _su, _se))
                     except Exception:
                         pass
-                    for _t, _u in _pansou_baidu(_nm_bd, 5.0)[:8]:
-                        _q_.put(('盘搜·网盘·百度网盘', _u, 0))
+                    for _tag, _f, _u in _nd_baidu_shares(_nm_bd, 4.0)[:3]:
+                        _q_.put(('%s·网盘·百度网盘' % _tag, _u, 0))
+                    # 盘搜已按用户要求下线（只走 双星 / 木偶玩偶 / 指定）
                 except Exception:
                     pass
 
