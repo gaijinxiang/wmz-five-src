@@ -29595,6 +29595,14 @@ def _install_pan_replacer():
                     # 网盘（百度）必须上屏：以前按「集数要和官方相等」整条丢弃，
                     # 结果官方 24 集、网盘 23 集时网盘直接消失，用户看不到可选项。
                     # 现在不砍，集数少就让用户自己看；只留 1 条百度线，别重复刷屏。
+                    # 小山·4K 必须在面板上：不同详情入口不一定都走到 _add_official_4k，
+                    # 这里再兜一次，缺了就补（缓存 30 分钟，重复打开不再多等）
+                    try:
+                        if not any("小山" in _dump(f) for f, _ in _keep):
+                            for _lab, _u in _xs_episodes(_dump(_v.get("vod_name"))):
+                                _keep.append((_lab, _u))
+                    except Exception:
+                        pass
                     # 网盘线只留 1 条（快映/木偶/玩偶都带百度，留一条就够）
                     _pan_n = 0
                     _k2 = []
