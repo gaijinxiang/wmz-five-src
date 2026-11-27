@@ -29385,7 +29385,7 @@ def _xs_dec(seg):
     return json.loads(base64.b64decode(t).decode("utf-8", "ignore"))
 
 
-def _xs_episodes(name, budget=5.0):
+def _xs_episodes(name, budget=2.0):
     """按片名取小山 4K 线路：返回 [(线路名, 选集串)]，选集用 xs: 令牌"""
     name = _dump(name)
     if not name:
@@ -29441,7 +29441,7 @@ def _xs_episodes(name, budget=5.0):
 
     th = threading.Thread(target=work, daemon=True)
     th.start()
-    th.join(max(2.0, budget))
+    th.join(max(1.2, budget))
     out = box or []
     if out:
         _XS_CACHE[name] = (time.time() + 1800, list(out))
