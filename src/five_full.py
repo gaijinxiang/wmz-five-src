@@ -12417,6 +12417,75 @@ _MUOU_LINE_CACHE = {}
 _MUOU_WARMING = set()
 
 
+_WOYOU_LINE_CACHE = {}
+
+
+def _woyou_line_for(name, budget=8.0):
+    """搜玩偶站 → 取百度(优先)/夸克那一整串选集令牌；缓存 30 分钟"""
+    key = _nd_key(name) or _dump(name)
+    if not key:
+        return None
+    hit = _WOYOU_LINE_CACHE.get(key)
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    import threading as _th
+    _box = {}
+
+    def _work():
+        try:
+            rows = _nd_site_search(key, "玩偶", 2) or []
+            for r in rows:
+                d = _nd_site_detail(_dump(r.get("vod_id")))
+                if not d:
+                    continue
+                _df = [x for x in _dump(d.get("vod_play_from")).split("$$$") if x]
+                _du = [x for x in _dump(d.get("vod_play_url")).split("$$$") if x]
+                _bd = _qk = None
+                for f, u in zip(_df, _du):
+                    _fl = _dump(f)
+                    if not u:
+                        continue
+                    if "百度" in _fl:
+                        _bd = (_fl, u)
+                    elif "夸克" in _fl:
+                        _qk = (_fl, u)
+                _pick = _bd or _qk
+                if _pick:
+                    _box["line"] = _pick
+                    return
+        except Exception:
+            pass
+
+    _t = _th.Thread(target=_work, daemon=True)
+    _t.start()
+    _t.join(max(1.0, budget))
+    _ln = _box.get("line")
+    if _ln:
+        _WOYOU_LINE_CACHE[key] = (time.time(), _ln)
+    return _ln
+
+
+def _add_woyou_line(v, budget=8.0):
+    """详情里补一条玩偶网盘线（百度优先）；名字带「玩偶」便于过滤"""
+    try:
+        _fs = [x for x in _dump(v.get("vod_play_from")).split("$$$") if x]
+        if any("玩偶" in _dump(f) for f in _fs):
+            return v
+        _name = _nd_key(_dump(v.get("vod_name"))) or _dump(v.get("vod_name"))
+        if not _name:
+            return v
+        _ln = _woyou_line_for(_name, budget)
+        if _ln:
+            _fs.append("玩偶·" + _dump(_ln[0]).replace("网盘·", ""))
+            _us = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
+            _us.append(_ln[1])
+            v["vod_play_from"] = "$$$".join(_fs)
+            v["vod_play_url"] = "$$$".join(_us)
+    except Exception:
+        pass
+    return v
+
+
 def _muou_line_for(name, budget=10.0):
     """搜木偶站 → 解析详情 → 取百度(优先)/夸克那一整串选集令牌。
     结果缓存 30 分钟，搜索时预热，详情页直接命中，避免「第一次进没有、第二次才有」。"""
@@ -28279,14 +28348,14 @@ def _install_pan_replacer():
                         continue
                     # 先补一条木偶线（缓存命中时是瞬间的），再补盘基地·百度（只要百度）
                     _add_muou_quark_line(_v, 5.0)
-                    _add_panjidi_baidu(_v, 6.0)
+                    _add_woyou_line(_v, 6.0)
                     _fs = [x for x in _dump(_v.get("vod_play_from")).split("$$$") if x]
                     _us = [x for x in _dump(_v.get("vod_play_url")).split("$$$") if x]
                     _keep = []
                     for f, u in zip(_fs, _us):
                         _fl = _dump(f)
-                        if "盘基地" in _fl and "百度" in _fl:
-                            _keep.append((f, u))     # 盘基地只留百度这一条
+                        if "玩偶" in _fl:
+                            _keep.append((f, u))     # 玩偶线保留
                             continue
                         if "网盘" in _fl:
                             if "木偶" in _fl and "百度" in _fl:
