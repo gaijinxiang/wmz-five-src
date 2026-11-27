@@ -30922,14 +30922,22 @@ def _sx_get(url, budget=4.0):
 
 
 def _sx_pan_links(txt):
-    """从任意 HTML 里抠百度分享链接"""
+    """从任意 HTML 里抠百度分享链接（保留 ?pwd= 提取码，不然加锁的分享打不开）"""
     if not txt:
         return []
     out = []
-    for u in re.findall(r'https?://pan\.baidu\.com/s/[A-Za-z0-9_\-]{5,}', txt):
+    for u in re.findall(r'https?://pan\.baidu\.com/s/[A-Za-z0-9_\-]{5,}(?:\?pwd=[A-Za-z0-9]+)?', txt):
+        u = html_unescape_pan(u)
         if u not in out:
             out.append(u)
     return out
+
+
+def html_unescape_pan(u):
+    try:
+        return _dump(u).replace('&amp;', '&').replace('&#38;', '&')
+    except Exception:
+        return u
 
 
 def _sx_eps(title):
@@ -30996,7 +31004,6 @@ def _sx_baidu_shares(name, budget=7.0):
                 eps = _sx_eps(ttl)
                 for u2 in _sx_pan_links(body)[:3]:
                     res.append((('双星·网盘·百度网盘', u2), eps))
-                    break
                 if res:
                     break
             if res:
