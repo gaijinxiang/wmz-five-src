@@ -28369,12 +28369,20 @@ def _install_pan_replacer():
                     _cloud_k = ("移动云", "天翼云", "联通云", "高码云", "河豚",
                                 "天堂", "橘汁", "云帧享")
 
+                    _plat_k = ("芒果", "腾讯", "爱奇艺", "优酷", "B站", "哔哩", "搜狐", "乐视")
+
+                    def _is_plat(_fl):
+                        return any(k in _fl for k in _plat_k)
+
                     def _is_cloud(_fl):
-                        return any(k in _fl for k in _cloud_k) or ("4K" in _fl and "官方" not in _fl)
+                        if _is_plat(_fl):
+                            return False
+                        return any(k in _fl for k in _cloud_k) or ("4K" in _fl)
 
                     def _is_official(_fl):
-                        return ("蓝光" in _fl) or ("官方" in _fl) or any(
-                            p in _fl for p in ("爱奇艺", "腾讯", "优酷", "芒果", "B站", "哔哩"))
+                        if _is_plat(_fl):
+                            return True
+                        return ("蓝光" in _fl) or ("官方" in _fl)
 
                     _clouds = [(f, u) for f, u in zip(_fs, _us)
                                if not _is_pan(_dump(f)) and _is_cloud(_dump(f))]
@@ -28384,15 +28392,21 @@ def _install_pan_replacer():
 
                     def _off_rank(_t):
                         _n = _dump(_t[0])
-                        if "蓝光" in _n:
+                        if "4K" in _n or "4k" in _n:
                             return 0
-                        if "1080" in _n:
+                        if "蓝光" in _n:
                             return 1
+                        if "1080" in _n:
+                            return 2
                         if "720" in _n:
-                            return 3
-                        return 2
+                            return 4
+                        return 3
 
-                    _best_o = min(_offs, key=_off_rank) if _offs else None
+                    _offs.sort(key=_off_rank)
+                    # 官方线：官方 4K（芒果/腾讯/爱奇艺/优酷）最多留 2 条，没有 4K 才退回蓝光/1080 一条
+                    _off_keep = [x for x in _offs if ("4K" in _dump(x[0]) or "4k" in _dump(x[0]))][:2]
+                    if not _off_keep and _offs:
+                        _off_keep = [min(_offs, key=_off_rank)]
                     _keep = []
                     for f, u in zip(_fs, _us):
                         _fl = _dump(f)
@@ -28400,8 +28414,8 @@ def _install_pan_replacer():
                             _keep.append((f, u))
                         elif _best_c is not None and (f, u) == _best_c:
                             _keep.append((f, u))   # 云/4K 最优 1 条
-                        elif _best_o is not None and (f, u) == _best_o:
-                            _keep.append((f, u))   # 官方蓝光/官方线 1 条
+                        elif any((f, u) == x for x in _off_keep):
+                            _keep.append((f, u))   # 官方 4K / 蓝光
                     if _keep and len(_keep) != len(_fs):
                         _v["vod_play_from"] = "$$$".join(f for f, _ in _keep)
                         _v["vod_play_url"] = "$$$".join(u for _, u in _keep)
