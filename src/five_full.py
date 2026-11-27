@@ -29540,6 +29540,14 @@ def _install_pan_replacer():
                            and not any(k in _nm(i) for k in _plat_k)
                            and _direct(i[1]) and _eps(i[1]) >= _minn]
                     _cl.sort(key=lambda t: (0 if "4K" in _nm(t) else 1, _rk(t)))
+                    # 云线（移动云/联通云/天翼云/高码云）一条都没有时，放宽集数限制：
+                    # 只要地址是直连媒体就先挂一条，别让面板上一朵云都不剩
+                    if not _cl:
+                        _cl = [i for i in _items
+                               if "百度" not in _nm(i) and "小山" not in _nm(i)
+                               and not any(k in _nm(i) for k in _plat_k)
+                               and _direct(i[1])]
+                        _cl.sort(key=lambda t: (-_eps(t[1]), _rk(t)))
                     _xs1 = [i for i in _items if "小山" in _nm(i) and "4K" in _nm(i)]
                     _mg = [i for i in _items if "芒果" in _nm(i)]
                     _tx = [i for i in _items if "腾讯" in _nm(i)]
