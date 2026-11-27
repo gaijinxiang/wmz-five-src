@@ -851,6 +851,9 @@ class Spider:
                 if "4K" in f:
                     continue
                 if "腾讯" in f:
+                    # 腾讯 4K 解析站（oxapi）现在回的是占位提示视频，已停用，
+                    # 4K 一律交给下面的「小山·4K」补线
+                    continue
                     _u4 = _conv(u, TXV_PREFIX, OX4K_PREFIX)
                     _n0, _n4 = u.count("#") + 1, _u4.count("#") + 1
                     if _u4 and _n4 >= max(1, (_n0 + 1) // 2) and "腾讯·4K" not in used:
@@ -884,6 +887,23 @@ class Spider:
                 vod["vod_play_url"] = "$$$".join(us + add_u)
                 for _f in add_f:
                     self._capsule_flags.add(_f)
+            # 小山·4K：顶替原来的「腾讯·4K」，同片同名匹配后挂上来
+            try:
+                _xsname = _dump(vod.get("vod_name"))
+                _xsgot = _xs_episodes(_xsname) if _xsname else []
+            except Exception:
+                _xsgot = []
+            if _xsgot:
+                _fsx = [_dump(x) for x in _dump(vod.get("vod_play_from")).split("$$$") if x]
+                _usx = [_dump(x) for x in _dump(vod.get("vod_play_url")).split("$$$") if x]
+                for _lab, _u in _xsgot:
+                    if _lab in _fsx:
+                        continue
+                    _fsx.append(_lab)
+                    _usx.append(_u)
+                    self._capsule_flags.add(_lab)
+                vod["vod_play_from"] = "$$$".join(_fsx)
+                vod["vod_play_url"] = "$$$".join(_usx)
             # 腾讯只留 4K：有「腾讯·4K」时，1080 的腾讯官方线不再重复占位
             fs = [_dump(x) for x in _dump(vod.get("vod_play_from")).split("$$$") if x]
             us = [_dump(x) for x in _dump(vod.get("vod_play_url")).split("$$$") if x]
@@ -16863,6 +16883,8 @@ def play_content(play_id, flag=""):
             return {"parse": 0, "jx": 0, "url": found,
                     "header": {"User-Agent": CDN_UA}, "format": _media_format(found)}
         return {"parse": 0, "jx": 0, "url": "", "msg": "影探线路解析失败，换条线路试试"}
+    if value.startswith(XS_PREFIX):
+        return _xs_play(value[len(XS_PREFIX):])
     if value.startswith(SZ_PREFIX):
         found = _sz_play(value[len(SZ_PREFIX):])
         if found:
@@ -28415,6 +28437,1038 @@ def _speed_tag(u, budget=0.9):
         return ""
 
 
+# ================= 小山·4K（原「小山影视源」，来自用户上传的稀饭聚合.py）=================
+# 后端 43.248.128.122:578，ECDH(secp256r1)+HKDF+AES-256-GCM 签名，纯标准库实现。
+try:
+    import requests as _xs_requests
+except Exception:
+    _xs_requests = None
+requests = _xs_requests
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+class _XsBase(object):
+    def init(self, extend=""):
+        pass
+    def getName(self):
+        return ""
+    def isVideoFormat(self, url):
+        return False
+    def manualVideoCheck(self):
+        return False
+    def destroy(self):
+        pass
+    def localProxy(self, param):
+        return None
+
+
+class XsScraper(_XsBase):
+    """小山 / 米诺（MiNO 秒播4K）。
+
+协议：ECDH(secp256r1) → HKDF-SHA256(salt=session_id) 派生签名密钥与响应体密钥
+ → HMAC-SHA256 签名 + AES-256-GCM 加密响应体。
+2026-11-20 重写，与独立源「山楂.py」对齐，修掉旧实现的四处硬伤：
+1. 私钥 / nonce / device_id 改用 secrets（旧版 random 是梅森旋转，可预测）
+2. 接口级兜底缓存 + 网络重试 + 限流退避（旧版一失败就返回空 dict，
+ 壳会拿空结果覆盖已有列表，表现为「搜索出来下一秒又消失」）
+3. 补齐筛选项（旧版 filters 恒为 {}，壳里没有排序/地区/年份/语言）
+4. 取票解析失败不再把 tk:xxx 当播放地址丢给壳；同集重播走缓存秒出
+"""
+
+    NAME = '小山'
+    HOST = 'http://43.248.128.122:578'
+    UA = 'okhttp/4.12.0'
+    APP_VERSION = '1.0.13'
+    VERSION_CODE = '13'
+    DEVICE_RISK = '5'
+    APP_VERIFY_SIGN = '9D3F7BAD0E160DD63437A1D3267AE87C426700E376D505809E1055BBA42C15E9'
+    PAGE_SIZE = 20
+
+    # ---- P-256 ----
+    _P = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff
+    _A = _P - 3
+    _N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551
+    _GX = 0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296
+    _GY = 0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5
+
+    # ---- 会话与缓存（类级共享：一个源一个实例，重连/缓存状态全局复用）----
+    _dev = ''
+    _sid = ''
+    _sk = b''
+    _bk = b''
+    _sched = None
+    _exp = 0.0
+    _last_ok = {}          # {(method, path, query, body): (ts, 解密后的成功响应)}
+    _search_cache = {}     # {(kw, quick, page): (ts, result)}
+    _play_cache = {}       # {token: (ts, real_url, fallback_api)}
+    _session = None
+    # 兜底缓存有效期：只按条数淘汰的话，接口连着失败几天会一直吐几天前的
+    # 旧数据且无过期判断；300s 与搜索缓存同一量级，超时宁可变空让壳重试。
+    FALLBACK_TTL = 300.0
+    # 取票缓存有效期：m3u8 token 常见 5~10 分钟失效，600s 会让重播拿到死链
+    PLAY_TTL = 240.0
+    # 在这个窗口内复用缓存不做 HEAD 活性校验：刚取到的地址不会立刻失效，
+    # 而探测一次要 1~2s（CDN 对 HEAD 很慢），重播体验会被拖垮。
+    FRESH_TTL = 60.0
+    # 解析站（jx4k / jiexicn 这类）抖动很大：同一条线实测 0.14s、4.3s、20.4s
+    # 三种都有。原来 timeout=10 串行重试 2 次，解析站不回就是 20s 干等，
+    # 而用户已经在详情页点了播放 —— 这就是「电影加载特别慢」的主因。
+    # 现在：候选并发打，单次 3.5s，整体 4.5s 封顶；拿不到直链立刻把解析
+    # 接口交回壳（parse=1），不再拿用户的时间去陪解析站。
+    RESOLVE_TIMEOUT = 3.5
+    RESOLVE_BUDGET = 4.5
+    RESOLVE_TRIES = 3
+    _lock = threading.Lock()   # 握手串行化：并发 _ensure 只允许一个线程真正握手
+
+    classes = [
+        {'type_id': '1', 'type_name': '电影'},
+        {'type_id': '2', 'type_name': '连续剧'},
+        {'type_id': '3', 'type_name': '综艺'},
+        {'type_id': '4', 'type_name': '动漫'},
+        {'type_id': '20', 'type_name': '短剧'},
+        {'type_id': '21', 'type_name': '少儿'},
+        {'type_id': '22', 'type_name': '漫剧'},
+        {'type_id': '23', 'type_name': '纪录片'},
+    ]
+
+    sort_list = [('', '默认'), ('hits', '最热'), ('score', '评分')]
+    area_list = [('', '全部'), ('内地', '内地'), ('中国香港', '中国香港'),
+                 ('中国台湾', '中国台湾'), ('美国', '美国'), ('韩国', '韩国'),
+                 ('日本', '日本'), ('英国', '英国'), ('法国', '法国'),
+                 ('泰国', '泰国'), ('印度', '印度')]
+    lang_list = [('', '全部'), ('国语', '国语'), ('英语', '英语'), ('日语', '日语'),
+                 ('韩语', '韩语'), ('粤语', '粤语')]
+    year_list = [('', '全部')] + [(str(y), str(y)) for y in range(2026, 2009, -1)]
+
+    def __init__(self):
+        self.host = self.HOST
+        self.page_size = self.PAGE_SIZE
+        self._rotate = 1
+        self._fallback = 1
+        self._sbox = None
+        self._m2 = None
+        self._m3 = None
+
+    # ---------- 生命周期 ----------
+    def getName(self):
+        return self.NAME
+
+    def getDependence(self):
+        return []
+
+    def setExtendInfo(self, extend):
+        return None
+
+    def isVideoFormat(self, url):
+        u = (url or '').lower()
+        return any(x in u for x in ('.m3u8', '.mp4', '.flv', 'cmecloud'))
+
+    def manualVideoCheck(self):
+        return False
+
+    def localProxy(self, param):
+        return None
+
+    def destroy(self):
+        self._exp = 0.0
+        try:
+            sess = XsScraper._session
+            if sess is not None:
+                sess.close()
+        except Exception:
+            pass
+        XsScraper._session = None
+
+    def init(self, extend=''):
+        try:
+            cfg = {}
+            if isinstance(extend, dict):
+                cfg = extend
+            elif isinstance(extend, str) and extend.strip().startswith('{'):
+                cfg = json.loads(extend)
+            base = str(cfg.get('base') or '').strip().rstrip('/')
+            if base.startswith('http'):
+                self.host = base
+            dev = str(cfg.get('device_id') or '').strip()
+            if dev:
+                XsScraper._dev = dev
+            # 显式传 0 必须生效，不能用「or 默认值」（0 or 1 == 1）
+            if cfg.get('rotate_device') is not None:
+                self._rotate = int(cfg.get('rotate_device') or 0)
+            if cfg.get('auto_fallback') is not None:
+                self._fallback = int(cfg.get('auto_fallback') or 0)
+            self.page_size = max(5, int(cfg.get('page_size') or self.PAGE_SIZE))
+        except Exception:
+            pass
+        if not self._dev:
+            XsScraper._dev = secrets.token_hex(16)
+        # 握手失败重试一次（服务器偶发不可达）；单次 10s，最坏约 20s，
+        # 与旧版单次 20s 持平，但不至于让首屏卡到 40s
+        for _ in range(2):
+            try:
+                if self._ensure(timeout=10):
+                    break
+            except Exception:
+                pass
+            time.sleep(0.3)
+
+    # ---------- 网络 ----------
+    @staticmethod
+    def _http(url, method='GET', data=None, headers=None, timeout=20):
+        # 优先 requests.Session：keep-alive 复用连接，握手/搜索/取票/解析都快不少
+        if requests is not None:
+            sess = XsScraper._session
+            if sess is None:
+                sess = requests.Session()
+                try:
+                    sess.trust_env = False   # 境内明文 IP：走系统代理反而被拦
+                except Exception:
+                    pass
+                XsScraper._session = sess
+            try:
+                r = sess.request(method, url, data=data, headers=headers, timeout=timeout)
+            except requests.exceptions.SSLError:
+                # 证书异常降级（自建证书/网关环境；有中间人风险，仅限取流场景）
+                r = sess.request(method, url, data=data, headers=headers,
+                                 timeout=timeout, verify=False)
+            return r.content
+        req = urllib.request.Request(url, data=data if method == 'POST' else None,
+                                     method=method)
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        try:
+            with _DIRECT.open(req, timeout=timeout) as r:
+                return r.read()
+        except ssl.SSLError:
+            # 证书异常时降级为不校验（同上，仅兜底）
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with _DIRECT.open(req, timeout=timeout) as r:
+                return r.read()
+
+    # 只有这些扩展名才值得探测活性：解析站给的是 API 地址（如
+    # coffee-api.xxx.com/...），对它发 HEAD 恒 404/405，会把好缓存全判死，
+    # 重播退化成每次重新取票（实测 0.06s → 5.2s）。
+    _MEDIA_EXT = ('.m3u8', '.mp4', '.flv', '.mkv', '.ts', '.mov', '.m4a', '.mp3')
+
+    @staticmethod
+    def _uri_alive(u):
+        """播放地址是否还活着：只有 404/410 算死链，其余一律按活处理。
+
+有些 CDN 不实现 HEAD（返回 405）或对无 Referer 的请求回 403，
+这些都不代表资源不存在；网络异常/超时同理。宁可多播一次旧地址，
+也不要把好地址误判成死链去反复取票。
+"""
+        path = str(u or '').split('?', 1)[0].lower()
+        if not path.endswith(XsScraper._MEDIA_EXT):
+            return True               # 非媒体直链（解析站 API）不做探测
+        try:
+            req = urllib.request.Request(
+                u, method='HEAD',
+                headers={'User-Agent': XsScraper.UA})
+            with _DIRECT.open(req, timeout=1.2) as r:
+                return int(getattr(r, 'status', 200) or 200) < 400
+        except urllib.error.HTTPError as exc:
+            return int(getattr(exc, 'code', 0) or 0) not in (404, 410)
+        except Exception:
+            return True
+
+    # ---------- EC / HKDF ----------
+    @classmethod
+    def _ec_add(cls, p1, p2):
+        if p1 is None:
+            return p2
+        if p2 is None:
+            return p1
+        P = cls._P
+        x1, y1 = p1
+        x2, y2 = p2
+        if x1 == x2 and (y1 + y2) % P == 0:
+            return None
+        if p1 == p2:
+            lam = (3 * x1 * x1 + cls._A) * pow(2 * y1, P - 2, P) % P
+        else:
+            lam = (y2 - y1) * pow(x2 - x1, P - 2, P) % P
+        x3 = (lam * lam - x1 - x2) % P
+        return x3, (lam * (x1 - x3) - y1) % P
+
+    @classmethod
+    def _ec_mul(cls, k, pt):
+        r = None
+        while k:
+            if k & 1:
+                r = cls._ec_add(r, pt)
+            pt = cls._ec_add(pt, pt)
+            k >>= 1
+        return r
+
+    @classmethod
+    def _ec_keypair(cls):
+        # 私钥必须来自 CSPRNG（random 是梅森旋转，可预测）
+        d = secrets.randbelow(cls._N - 1) + 1
+        x, y = cls._ec_mul(d, (cls._GX, cls._GY))
+        return d, b'\x04' + x.to_bytes(32, 'big') + y.to_bytes(32, 'big')
+
+    @classmethod
+    def _ecdh(cls, d, peer):
+        x = int.from_bytes(peer[1:33], 'big')
+        y = int.from_bytes(peer[33:65], 'big')
+        sx, _ = cls._ec_mul(d, (x, y))
+        return sx.to_bytes(32, 'big')
+
+    @staticmethod
+    def _hkdf(ikm, salt, info, n=32):
+        prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+        out, t, i = b'', b'', 1
+        while len(out) < n:
+            t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+            out += t
+            i += 1
+        return out[:n]
+
+    # ---------- AES-256 + GCM ----------
+    def _aes_tables(self):
+        if self._sbox is not None:
+            return
+        def xt(a):
+            return ((a << 1) ^ 0x1B) & 0xFF if a & 0x80 else a << 1
+
+        def gmul(a, b):
+            r = 0
+            for _ in range(8):
+                if b & 1:
+                    r ^= a
+                b >>= 1
+                a = xt(a)
+            return r
+        exp = [0] * 512
+        log = [0] * 256
+        x = 1
+        for i in range(255):
+            exp[i] = x
+            log[x] = i
+            x ^= xt(x)
+        for i in range(255, 512):
+            exp[i] = exp[i - 255]
+        sbox = [0x63] * 256
+        for i in range(1, 256):
+            inv = exp[255 - log[i]]
+            s = inv
+            for sh in range(1, 5):
+                s ^= ((inv << sh) | (inv >> (8 - sh))) & 0xFF
+            sbox[i] = s ^ 0x63
+        self._sbox = sbox
+        self._m2 = [gmul(i, 2) for i in range(256)]
+        self._m3 = [gmul(i, 3) for i in range(256)]
+
+    def _aes_expand(self, key):
+        self._aes_tables()
+        sbox = self._sbox
+        rcon = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36]
+        nk = len(key) // 4
+        nr = nk + 6
+        w = [list(key[4 * i:4 * i + 4]) for i in range(nk)]
+        for i in range(nk, 4 * (nr + 1)):
+            t = list(w[i - 1])
+            if i % nk == 0:
+                t = [sbox[b] for b in t[1:] + t[:1]]
+                t[0] ^= rcon[i // nk - 1]
+            elif nk > 6 and i % nk == 4:
+                t = [sbox[b] for b in t]
+            w.append([w[i - nk][j] ^ t[j] for j in range(4)])
+        return w, nr
+
+    def _aes_block(self, sched, block):
+        w, nr = sched
+        sbox, m2, m3 = self._sbox, self._m2, self._m3
+        st = list(block)
+        for i in range(16):
+            st[i] ^= w[i >> 2][i & 3]
+        for rnd in range(1, nr + 1):
+            for i in range(16):
+                st[i] = sbox[st[i]]
+            t = list(st)
+            for r in range(1, 4):
+                for c in range(4):
+                    st[4 * c + r] = t[4 * ((c + r) % 4) + r]
+            if rnd != nr:
+                for c in range(4):
+                    b = 4 * c
+                    a0, a1, a2, a3 = st[b], st[b + 1], st[b + 2], st[b + 3]
+                    st[b] = m2[a0] ^ m3[a1] ^ a2 ^ a3
+                    st[b + 1] = a0 ^ m2[a1] ^ m3[a2] ^ a3
+                    st[b + 2] = a0 ^ a1 ^ m2[a2] ^ m3[a3]
+                    st[b + 3] = m3[a0] ^ a1 ^ a2 ^ m2[a3]
+            rk = 4 * rnd
+            for i in range(16):
+                st[i] ^= w[rk + (i >> 2)][i & 3]
+        return bytes(st)
+
+    @staticmethod
+    def _gcm_reduce(v, n):
+        R128 = 0xE1000000000000000000000000000000
+        for _ in range(n):
+            v = (v >> 1) ^ R128 if v & 1 else v >> 1
+        return v
+
+    @classmethod
+    def _ghash(cls, h, data):
+        # 4-bit 窗口表：每 16 字节块 32 次查表，替代逐位 128 次循环
+        m = [0] * 16
+        for j in range(1, 16):
+            v = 0
+            for k in range(4):
+                if (j >> k) & 1:
+                    v ^= cls._gcm_reduce(h, 3 - k)
+            m[j] = v
+        f = [cls._gcm_reduce(j, 4) for j in range(16)]
+        y = 0
+        for i in range(0, len(data), 16):
+            y ^= int.from_bytes(data[i:i + 16], 'big')
+            acc = 0
+            for n in range(31, -1, -1):
+                acc = m[(y >> (124 - 4 * n)) & 0xF] ^ (acc >> 4) ^ f[acc & 0xF]
+            y = acc
+        return y
+
+    def _gcm_decrypt(self, sched, iv, blob):
+        """blob = 密文 || 16 字节 tag，返回明文；tag 不匹配返回 None。"""
+        h = int.from_bytes(self._aes_block(sched, b'\x00' * 16), 'big')
+        c, tag = blob[:-16], blob[-16:]
+        j0 = iv + b'\x00\x00\x00\x01'
+        ctr = int.from_bytes(j0, 'big')
+        out = bytearray()
+        for i in range(0, len(c), 16):
+            ctr = (ctr & ~0xFFFFFFFF) | ((ctr + 1) & 0xFFFFFFFF)
+            ks = self._aes_block(sched, ctr.to_bytes(16, 'big'))
+            out += bytes(a ^ b for a, b in zip(c[i:i + 16], ks))
+        pad = c + b'\x00' * ((16 - len(c) % 16) % 16)
+        s = self._ghash(h, pad + struct.pack('>QQ', 0, len(c) * 8))
+        calc = int.from_bytes(self._aes_block(sched, j0), 'big') ^ s
+        if calc != int.from_bytes(tag, 'big'):
+            return None
+        return bytes(out)
+
+    # ---------- 会话 ----------
+    def _ensure(self, timeout=20):
+        if self._sid and time.time() < self._exp:
+            return True
+        with XsScraper._lock:
+            # double-check：等锁期间可能已有别的线程完成握手
+            if self._sid and time.time() < self._exp:
+                return True
+            if not self._dev:
+                XsScraper._dev = secrets.token_hex(16)
+            d, pub = self._ec_keypair()
+            body = json.dumps({
+                'platform': 'android',
+                'version': self.APP_VERSION,
+                'device_id': self._dev,
+                'client_pub': base64.b64encode(pub).decode(),
+                'device_brand': 'Xiaomi',
+                'device_manufacturer': 'Xiaomi',
+                'device_model': 'MI 8',
+                'sig_src': 'java',
+                'so_version': 13,
+            }, separators=(',', ':')).encode('utf-8')
+            raw = self._http(self.host + '/api/v1/security/init', 'POST', body,
+                             {'User-Agent': self.UA,
+                              'Content-Type': 'application/json'}, timeout=timeout)
+            j = json.loads(raw.decode('utf-8', 'ignore'))
+            data = j.get('data') or {}
+            sid = data.get('session_id') or ''
+            pub_s = data.get('server_pub') or ''
+            if not sid or not pub_s:
+                return False
+            peer = base64.b64decode(pub_s)
+            if len(peer) != 65 or peer[0] != 4:
+                return False
+            secret = self._ecdh(d, peer)
+            XsScraper._sid = sid
+            XsScraper._sk = self._hkdf(secret, sid.encode(),
+                                           b'bwv/apisec/ecdh-signkey/v1')
+            XsScraper._bk = self._hkdf(secret, sid.encode(),
+                                           b'bwv/apisec/ecdh-bodykey/v1')
+            XsScraper._sched = self._aes_expand(XsScraper._bk)
+            ttl = int(data.get('expires_in') or 600)
+            XsScraper._exp = time.time() + max(60, ttl - 60)
+            return True
+
+    # ---------- 签名请求 ----------
+    def _api(self, path, query='', method='GET', body=''):
+        # 接口级「上次成功响应」缓存：偶发失败时不要返回空 dict，否则壳会拿空
+        # 结果覆盖已有列表（表现为「搜索出来下一秒又消失」）。auto_fallback=0 可关。
+        key = (method.upper(), path, query or '', body or '')
+        ent = XsScraper._last_ok.get(key)
+        cached = {}
+        if ent:
+            if time.time() - ent[0] < self.FALLBACK_TTL:
+                cached = ent[1]
+            else:
+                XsScraper._last_ok.pop(key, None)   # 过期即弃，不再吐几天前的旧数据
+        fb = int(getattr(self, '_fallback', 1) or 0)
+        last = dict(cached)
+        for attempt in (0, 1):
+            if not (self._sid and time.time() < self._exp):
+                try:
+                    ok = self._ensure()
+                except Exception:
+                    ok = False   # 握手本身也可能网络异常，不能让异常逃出兜底
+                if not ok:
+                    return dict(cached) if (fb and cached) else {}
+            ts = str(int(time.time()))
+            nonce = secrets.token_hex(16)
+            raw = (body or '').encode('utf-8')
+            bhash = hashlib.sha256(raw).hexdigest()
+            q = ''
+            if query:
+                parts = [p for p in query.split('&') if p]
+                parts.sort(key=lambda s: s.split('=')[0])
+                q = '&'.join(parts)
+            src = '\n'.join([method.upper(), path, q, bhash, ts, nonce,
+                             self._dev, self._sid, self.APP_VERSION])
+            sign = hmac.new(self._sk, src.encode('utf-8'), hashlib.sha256).hexdigest()
+            headers = {
+                'User-Agent': self.UA,
+                'X-Session-Id': self._sid,
+                'X-Device-Id': self._dev,
+                'X-Version-Code': self.VERSION_CODE,
+                'X-Device-Risk': self.DEVICE_RISK,
+                'app-os': 'android',
+                'app-api-verify-sign': self.APP_VERIFY_SIGN,
+                'X-App-Version': self.APP_VERSION,
+                'X-Timestamp': ts,
+                'X-Nonce': nonce,
+                'X-Sign': sign,
+                'X-Body-Sha256': bhash,
+            }
+            if raw:
+                headers['Content-Type'] = 'application/json; charset=utf-8'
+            url = self.host + path + (('?' + q) if q else '')
+            try:
+                txt = self._http(url, method, raw if raw else None,
+                                 headers).decode('utf-8', 'ignore')
+                last = json.loads(txt)
+                if not isinstance(last, dict):
+                    last = {}
+            except Exception:
+                # 网络抖动/超时：重试一次（原来直接返回空，分类页会整页空白）
+                if attempt == 0:
+                    XsScraper._exp = 0.0
+                    continue
+                return dict(cached) if (fb and cached) else (last or {})
+            code = last.get('code')
+            # 限流退避（search 接口限流严格）：提示「频繁」/rate 时睡 1.5s 重试一次
+            msg = str(last.get('msg') or '')
+            if attempt == 0 and ('频繁' in msg or 'rate' in msg.lower()):
+                time.sleep(1.5)
+                continue
+            if code in (4600, 4601, 401) and attempt == 0:
+                XsScraper._exp = 0.0
+                continue
+            if code == 4805 and attempt == 0:
+                # 设备被风控：rotate_device=1 时换 device_id 重新握手
+                if int(getattr(self, '_rotate', 1) or 0):
+                    XsScraper._dev = secrets.token_hex(16)
+                XsScraper._exp = 0.0
+                continue
+            data = last.get('data')
+            if isinstance(data, dict) and data.get('enc') == 1 and data.get('payload'):
+                try:
+                    blob = base64.b64decode(data['payload'])
+                    plain = self._gcm_decrypt(XsScraper._sched, blob[:12], blob[12:])
+                    if plain:
+                        last['data'] = json.loads(plain.decode('utf-8', 'ignore'))
+                except Exception:
+                    pass
+            # 解密「之后」再缓存（旧版在解密前浅拷贝，缓存里永远是密文，兜底无效）；
+            # 只缓存成功响应，限量 128 条按插入顺序淘汰
+            if last.get('code') in (0, 1) and isinstance(last.get('data'), (dict, list)):
+                try:
+                    cache = XsScraper._last_ok
+                    cache[key] = (time.time(), dict(last))
+                    while len(cache) > 128:
+                        cache.pop(next(iter(cache)))
+                except Exception:
+                    pass
+            return last
+        return dict(cached) if (fb and cached) else (last or {})
+
+    # ---------- 数据映射 ----------
+    @staticmethod
+    def _pic(u):
+        u = (u or '').strip()
+        if u.startswith('//'):
+            u = 'https:' + u
+        return u
+
+    def _vod(self, v):
+        # 服务端偶尔在 hits 里塞 null / 非 dict / 缺字段，直接 .get() 会抛异常
+        # 导致整页搜索结果为空
+        if not isinstance(v, dict):
+            return None
+        vid = str(v.get('vod_id') or '').strip()
+        name = (v.get('vod_name') or '').strip()
+        if not vid or not name:
+            return None
+        remarks = (v.get('vod_remarks') or '').strip()
+        if not remarks:
+            bits = [str(x) for x in (v.get('vod_year'), v.get('vod_area')) if x]
+            remarks = '·'.join(bits)
+        if not remarks and v.get('vod_score'):
+            remarks = '评分%s' % v.get('vod_score')
+        return {
+            'vod_id': vid, 'vod_name': name,
+            'vod_pic': self._pic(v.get('vod_pic')),
+            'vod_remarks': remarks,
+        }
+
+    def _list(self, videos):
+        out = []
+        for v in videos or []:
+            item = self._vod(v)
+            if item:
+                out.append(item)
+        return out
+
+    # ---------- 六方法 ----------
+    def homeContent(self, filter=False):
+        filters = {}
+        if filter:
+            def opts(pairs):
+                return [{'n': n, 'v': v} for v, n in pairs]
+            for c in self.classes:
+                filters[c['type_id']] = [
+                    {'key': 'sort', 'name': '排序', 'value': opts(self.sort_list)},
+                    {'key': 'area', 'name': '地区', 'value': opts(self.area_list)},
+                    {'key': 'year', 'name': '年份', 'value': opts(self.year_list)},
+                    {'key': 'lang', 'name': '语言', 'value': opts(self.lang_list)},
+                ]
+        return {'class': list(self.classes), 'filters': filters}
+
+    def homeVideoContent(self):
+        try:
+            j = self._api('/api/v1/category/videos',
+                          'page=1&page_size=%d&type_id=2' % self.page_size)
+            return {'list': self._list(((j.get('data') or {}).get('videos')) or [])}
+        except Exception:
+            return {'list': []}
+
+    def categoryContent(self, tid, pg, filter=False, extend=None):
+        try:
+            pg = max(1, int(pg or 1))
+        except Exception:
+            pg = 1
+        query = 'type_id=%s&page=%d&page_size=%d' % (
+            urllib.parse.quote(str(tid), safe=''), pg, self.page_size)
+        if isinstance(extend, dict):
+            for k in ('sort', 'area', 'year', 'lang', 'class'):
+                v = extend.get(k)
+                if v and str(v) != '全部':
+                    query += '&%s=%s' % (k, urllib.parse.quote(str(v), safe=''))
+        try:
+            j = self._api('/api/v1/category/videos', query)
+            data = j.get('data') or {}
+            videos = data.get('videos') or []
+            pag = data.get('pagination') or {}
+            total = int(pag.get('total') or 0)
+            pages = int(pag.get('total_pages') or 0) or (pg + 1 if videos else pg)
+            return {'list': self._list(videos), 'page': pg, 'pagecount': pages,
+                    'limit': self.page_size, 'total': total}
+        except Exception:
+            return {'list': [], 'page': pg, 'pagecount': pg,
+                    'limit': self.page_size, 'total': 0}
+
+    def detailContent(self, ids):
+        try:
+            vid = str(ids[0]).strip() if ids else ''
+            if not vid:
+                return {'list': []}
+            j = self._api('/api/v1/video/detail',
+                          'id=' + urllib.parse.quote(vid, safe=''))
+            info = ((j.get('data') or {}).get('vod_info')) or {}
+            if not info:
+                return {'list': []}
+            froms, urls = [], []
+            for line in info.get('vod_url_with_player') or []:
+                code = (line.get('code') or '').strip()
+                name = (line.get('name') or '').strip() or code
+                raw = (line.get('url') or '').strip()
+                if not raw:
+                    continue
+                # 集名/线路码会拼进 vod_play_url，$ 与 # 是本文件的段落分隔符，
+                # 不清洗会导致整条线路解析错位
+                code_seg = code.replace('$', ' ').replace('#', ' ')
+                eps, seen = [], set()
+                for seg in raw.split('#'):
+                    seg = seg.strip()
+                    if not seg or '$' not in seg:
+                        continue
+                    ep, token = seg.split('$', 1)
+                    ep, token = ep.strip(), token.strip()
+                    if not ep or not token or token in seen:
+                        continue
+                    seen.add(token)
+                    eps.append('%s$%s|%s'
+                               % (ep.replace('$', ' ').replace('#', ' '),
+                                  code_seg, token))
+                if eps:
+                    froms.append(name.replace('$', ' ').replace('#', ' '))
+                    urls.append('#'.join(eps))
+            if not froms:
+                return {'list': []}
+            year = str(info.get('vod_year') or '').strip()[:4]
+            remarks = (info.get('vod_remarks') or '').strip()
+            if not remarks and info.get('vod_score'):
+                remarks = '评分%s' % info.get('vod_score')
+            vod = {
+                'vod_id': str(info.get('vod_id') or vid),
+                'vod_name': (info.get('vod_name') or '').strip(),
+                'vod_pic': self._pic(info.get('vod_pic')),
+                'type_name': (info.get('vod_class') or info.get('type_name') or '').strip(),
+                'vod_year': year,
+                'vod_area': (info.get('vod_area') or '').strip(),
+                'vod_actor': (info.get('vod_actor') or '').strip(),
+                'vod_director': (info.get('vod_director') or '').strip(),
+                'vod_remarks': remarks,
+                'vod_content': (info.get('vod_content')
+                                or info.get('vod_blurb') or '').strip(),
+                'vod_play_from': '$$$'.join(froms),
+                'vod_play_url': '$$$'.join(urls),
+            }
+            return {'list': [vod]}
+        except Exception:
+            return {'list': []}
+
+    def searchContent(self, key, quick=False, pg='1'):
+        """服务端搜索是宽分词且限流严格（搜「庆余年」会连「林总的三十年庆」一起出）。
+
+完整搜索只做页内相关性重排，不丢结果；quick 只留片名含关键词的，
+一个都不匹配时回退原始结果。同词同页 120s 缓存，避开限流。
+失败时回退上次成功结果，绝不返回空 list（壳会清空结果页）。
+"""
+        try:
+            page = max(1, int(pg or 1))
+        except Exception:
+            page = 1
+        kw = str(key or '').strip()
+        size = 10 if quick else 20
+        try:
+            ent = XsScraper._search_cache.get((kw, bool(quick), page))
+            if ent and time.time() - ent[0] < 120:
+                return dict(ent[1])
+            j = self._api('/api/v1/search',
+                          'page=%d&page_size=%d&wd=%s'
+                          % (page, size, urllib.parse.quote(kw, safe='')))
+            data = j.get('data') or {}
+            if not data:
+                # _api 内部故障（网络/握手失败且该接口无缓存）会返回 {}：视为失败
+                raise RuntimeError('empty search response')
+            hits = list(data.get('hits') or [])
+            if kw:
+                low = kw.lower()
+                hits.sort(key=lambda h: 0 if isinstance(h, dict)
+                          and low in str(h.get('vod_name') or '').lower() else 1)
+            if quick:
+                matched = [h for h in hits if isinstance(h, dict)
+                           and kw.lower() in str(h.get('vod_name') or '').lower()]
+                hits = matched if matched else hits[:size]
+            if kw and not hits:
+                raise RuntimeError('empty hits')   # 回退缓存，避免「结果秒消失」
+            res = {'list': self._list(hits), 'page': page,
+                   'limit': int(data.get('limit') or size),
+                   'total': int(data.get('total') or len(hits))}
+            pages = int(data.get('total_pages') or 0)
+            if pages:
+                res['pagecount'] = pages
+            try:
+                cache = XsScraper._search_cache
+                cache[(kw, bool(quick), page)] = (time.time(), res)
+                if len(cache) > 100:
+                    now = time.time()
+                    for ck in [k for k, v in cache.items() if now - v[0] > 300]:
+                        cache.pop(ck, None)
+                    while len(cache) > 100:
+                        cache.pop(next(iter(cache)))
+            except Exception:
+                pass
+            return res
+        except Exception:
+            cache = getattr(XsScraper, '_search_cache', {}) or {}
+            ent = cache.get((kw, bool(quick), page))
+            if not ent:                       # 退而求其次：同关键词任意页
+                same = [(ts, r) for (k, ts, r) in
+                        ((k, v[0], v[1]) for k, v in cache.items())
+                        if k[0] == kw]
+                if same:
+                    same.sort(key=lambda x: -x[0])
+                    ent = (same[0][0], same[0][1])
+            if ent and time.time() - ent[0] < 300:
+                out = dict(ent[1])
+                out['page'] = page            # 页码按本次请求修正
+                out['pagecount'] = max(int(out.get('pagecount') or 0), page + 1)
+                return out
+            return {'list': [], 'page': page, 'limit': size}
+
+    # ---------- 播放 ----------
+    def _ticket(self, token):
+        try:
+            body = json.dumps({'token': token}, separators=(',', ':'))
+            j = self._api('/api/v1/vod/ticket', '', 'POST', body)
+            if str(j.get('code')) != '1':
+                return ''
+            return ((j.get('data') or {}).get('ticket')) or ''
+        except Exception:
+            return ''
+
+    @staticmethod
+    def _b64json(s):
+        raw = s.replace('-', '+').replace('_', '/')
+        raw += '=' * ((4 - len(raw) % 4) % 4)
+        try:
+            return json.loads(base64.b64decode(raw).decode('utf-8', 'ignore'))
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _parse_play(txt):
+        """解析站响应 → 可播直链（空串表示这次没解出来）。"""
+        txt = str(txt or '').strip()
+        if not txt:
+            return ''
+        if txt.startswith('{'):
+            try:
+                obj = json.loads(txt)
+                real = obj.get('url') or (obj.get('data') or {}).get('url') or ''
+                if isinstance(real, dict):
+                    real = real.get('url') or ''
+                real = str(real).strip()
+                return real if real.startswith('http') else ''
+            except Exception:
+                return ''
+        if txt.startswith('http'):
+            return txt.split('\n')[0].strip()
+        return ''
+
+    def _resolve_round(self, cands, deadline):
+        """并发打一轮候选，谁先解出直链用谁；到预算就收手。
+
+1080P 这类线实测要连打三次才成功（1.5s 空、1.0s 空、1.8s 出链），
+所以「一轮失败」不算判死，由 _resolve 在预算内再补轮次。
+"""
+        box = {}
+        lock = threading.Lock()
+        state = {'left': len(cands)}
+        done = threading.Event()
+
+        def run(target):
+            real = ''
+            try:
+                left = max(0.8, deadline - time.time())
+                txt = self._http(target, 'GET', None,
+                                 {'User-Agent': self.UA,
+                                  'Referer': 'https://www.google.com/'},
+                                 timeout=min(self.RESOLVE_TIMEOUT, left))
+                real = self._parse_play(txt.decode('utf-8', 'ignore'))
+            except Exception:
+                real = ''
+            with lock:
+                if real and 'real' not in box:
+                    box['real'] = real
+                    box['api'] = target
+                state['left'] -= 1
+                if state['left'] <= 0 or 'real' in box:
+                    done.set()
+
+        for t in cands:
+            th = threading.Thread(target=run, args=(t,), daemon=True)
+            th.start()
+        done.wait(max(0.5, min(self.RESOLVE_BUDGET,
+                               deadline - time.time())))
+        return box.get('real') or ''
+
+    def _resolve(self, ticket):
+        """ticket → (真实地址, 解析接口兜底地址)。"""
+        data = (self._b64json(ticket.split('.')[0]) or {}).get('data') or {}
+        url = (data.get('url') or '').strip()
+        api = (data.get('parse_api') or '').strip()
+        api = api.replace('\\u00026', '&').replace('\u0002', '').replace('\\u0002', '')
+        if not url:
+            return '', ''
+        cands = []
+        if api:
+            if api.startswith('/'):
+                api = self.host + api
+            if '{md5}' in api:
+                cands.append(api.replace('{md5}', hashlib.md5(url.encode()).hexdigest()))
+                cands.append(api.replace('{md5}', urllib.parse.quote(url, safe='')))
+            else:
+                cands.append(api + urllib.parse.quote(url, safe=''))
+        if not cands:
+            return '', ''
+        deadline = time.time() + self.RESOLVE_BUDGET
+        for _ in range(self.RESOLVE_TRIES):
+            real = self._resolve_round(cands, deadline)
+            if real:
+                return real, cands[0]
+            if time.time() >= deadline - 0.4:
+                break
+        return '', cands[0]
+
+    def playerContent(self, flag, id, vipFlags=None):
+        pid = (id or '').strip()
+        token = pid
+        if '|' in pid:
+            _, token = pid.split('|', 1)
+            token = token.strip()
+        if not token:
+            return {'parse': 1, 'url': '', 'header': {'User-Agent': self.UA}}
+        # 同一集重播/重试：直接用缓存的真实地址，省掉取票+解析两次往返。
+        # m3u8 token 常见 5~10 分钟失效，原来 600s 盲信会让重播拿到死链，
+        # 所以缩短 TTL 且命中时做一次 HEAD 活性校验。
+        ent = XsScraper._play_cache.get(token)
+        if ent and time.time() - ent[0] < self.PLAY_TTL and str(ent[1]).startswith('http'):
+            # 刚取到的地址（FRESH_TTL 内）几乎不可能已经失效，直接复用：
+            # 同一集连点两次就该秒开。只有「放了一会儿」的地址才做 HEAD 校验，
+            # 这样既不会拿死链糊弄播放器，也不会让重播白白多等 1~2s。
+            if time.time() - ent[0] < XsScraper.FRESH_TTL or self._uri_alive(ent[1]):
+                return {'parse': 0, 'url': ent[1], 'header': {'User-Agent': self.UA}}
+            XsScraper._play_cache.pop(token, None)   # 死链：丢掉重新取票
+        ticket = self._ticket(token)
+        if ticket:
+            real, fallback = self._resolve(ticket)
+            if real.startswith('http'):
+                try:
+                    cache = XsScraper._play_cache
+                    cache[token] = (time.time(), real, fallback)
+                    while len(cache) > 200:
+                        cache.pop(next(iter(cache)))
+                except Exception:
+                    pass
+                return {'parse': 0, 'url': real, 'header': {'User-Agent': self.UA}}
+            if fallback.startswith('http'):
+                return {'parse': 1, 'url': fallback, 'header': {'User-Agent': self.UA}}
+        # 取票/解析全失败：不要把 tk:xxx 当 URL 丢给播放器（旧版就是这里出错）
+        return {'parse': 1, 'url': '', 'header': {'User-Agent': self.UA}}
+
+
+
+
+XS_PREFIX = "xs:"
+_XS_LOCK = threading.Lock()
+_XS_OBJ = None
+_XS_CACHE = {}
+XS_UA = "okhttp/4.12.0"
+
+
+def _xs_obj():
+    global _XS_OBJ
+    if _XS_OBJ is None:
+        with _XS_LOCK:
+            if _XS_OBJ is None:
+                _o = XsScraper()
+                _o.init("")
+                _XS_OBJ = _o
+    return _XS_OBJ
+
+
+def _xs_enc(obj):
+    raw = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _xs_dec(seg):
+    t = _dump(seg).replace("-", "+").replace("_", "/")
+    while len(t) % 4:
+        t += "="
+    return json.loads(base64.b64decode(t).decode("utf-8", "ignore"))
+
+
+def _xs_episodes(name, budget=5.0):
+    """按片名取小山 4K 线路：返回 [(线路名, 选集串)]，选集用 xs: 令牌"""
+    name = _dump(name)
+    if not name:
+        return []
+    hit = _XS_CACHE.get(name)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    box = []
+
+    def work():
+        try:
+            sp = _xs_obj()
+            got = sp.searchContent(name, False, "1") or {}
+            rows = got.get("list") or []
+            tgt = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", name)
+            vid, best = "", 0
+            for row in rows:
+                nm = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "",
+                            _dump(row.get("vod_name")))
+                if not nm:
+                    continue
+                if nm == tgt:
+                    vid, best = row.get("vod_id"), 2
+                    break
+                if best < 1 and (nm in tgt or tgt in nm):
+                    vid, best = row.get("vod_id"), 1
+            if not vid:
+                return
+            detail = sp.detailContent([vid]) or {}
+            lst = detail.get("list") or []
+            if not lst:
+                return
+            item = lst[0]
+            fs = _dump(item.get("vod_play_from")).split("$$$")
+            us = _dump(item.get("vod_play_url")).split("$$$")
+            for f, u in zip(fs, us):
+                f = _dump(f)
+                # 只收真 4K 线；「小芒4K」是芒果整季合集（集数远超本体），不上屏
+                if "4K" not in f or "小芒" in f:
+                    continue
+                eps = []
+                for seg in _dump(u).split("#"):
+                    if not seg or "$" not in seg:
+                        continue
+                    nm, pid = seg.split("$", 1)
+                    eps.append("%s$%s%s" % (nm, XS_PREFIX,
+                                            _xs_enc({"f": f, "i": pid})))
+                if eps:
+                    lab = "小山·" + f.replace("【推荐】", "")
+                    box.append((lab, "#".join(eps)))
+        except Exception:
+            return
+
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    th.join(max(2.0, budget))
+    out = box or []
+    if out:
+        _XS_CACHE[name] = (time.time() + 1800, list(out))
+        while len(_XS_CACHE) > 30:
+            _XS_CACHE.pop(next(iter(_XS_CACHE)), None)
+    return list(out)
+
+
+def _xs_play(seg):
+    """xs: 令牌 → 真直链"""
+    try:
+        obj = _xs_dec(seg)
+    except Exception:
+        return {"parse": 0, "jx": 0, "url": "", "msg": "小山线路令牌坏了"}
+    try:
+        sp = _xs_obj()
+        r = sp.playerContent(_dump(obj.get("f")), _dump(obj.get("i"))) or {}
+    except Exception:
+        r = {}
+    u = _dump(r.get("url"))
+    if u.startswith("http"):
+        return {"parse": int(r.get("parse") or 0), "jx": 0, "url": u,
+                "header": {"User-Agent": XS_UA, "Referer": "https://www.google.com/"},
+                "format": "m3u8" if ".m3u8" in u or "parse" in u else "mp4"}
+    return {"parse": 0, "jx": 0, "url": "", "msg": "小山这条没换到流，换条线路试试"}
+
+
 def _install_pan_replacer():
     for _name in ("Spider", "DoubanSpider"):
         _cls = globals().get(_name)
@@ -28507,15 +29561,21 @@ def _install_pan_replacer():
                     _mg = [x for x in _offs if "芒果" in _dump(x[0])]
                     if _mg and not any("芒果" in _dump(x[0]) for x in _off_keep):
                         _off_keep.append(_mg[0])
+                    # 小山·4K 顶替腾讯 4K，必须上屏（最多留 2 条：4K / 蓝光4K）
+                    _xs_keep = [x for x in zip(_fs, _us) if "小山" in _dump(x[0])][:2]
                     _keep = []
                     for f, u in zip(_fs, _us):
                         _fl = _dump(f)
-                        if _is_pan(_fl):
+                        if _xs_keep and (f, u) == _xs_keep[0]:
+                            _keep.append((f, u))
+                        elif _is_pan(_fl):
                             _keep.append((f, u))
                         elif _best_c is not None and (f, u) == _best_c:
                             _keep.append((f, u))   # 云/4K 最优 1 条
                         elif any((f, u) == x for x in _off_keep):
                             _keep.append((f, u))   # 官方 4K / 蓝光
+                        elif any((f, u) == x for x in _xs_keep):
+                            _keep.append((f, u))   # 小山 4K / 蓝光4K
                     # 集数对齐：网盘线的集数必须和官方/云线相等，凑不齐的网盘线不上屏
                     _ref = 0
                     for f, u in _keep:
@@ -28529,7 +29589,7 @@ def _install_pan_replacer():
                     # 精选：把最优那条云/4K 改名为「五大平台·精选4K」并加实测速度，排在最前
                     # 只有「云/4K」这类直连线路才改名成精选；腾讯/芒果等官方平台线
                     # 保留原名，免得「腾讯·4K」被改名吞掉、面板上一条腾讯都没了
-                    _PLAT = ("腾讯", "芒果", "爱奇艺", "优酷", "B站", "哔哩", "搜狐", "乐视")
+                    _PLAT = ("腾讯", "芒果", "爱奇艺", "优酷", "B站", "哔哩", "搜狐", "乐视", "小山")
                     _pick = next((x for x in _keep
                                   if not _is_pan(_dump(x[0]))
                                   and not any(_k in _dump(x[0]) for _k in _PLAT)), None)
