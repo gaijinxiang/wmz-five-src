@@ -6869,12 +6869,14 @@ def _yt_parse(page_url):
         return cached[1]
     found = ""
     ids = YT_PARSE_IDS
-    # 云盘直链只有 4K 解析通道能换链，先试它，省一轮失败
+    _FYS_TPL = "http://fys.lyyytv.cn/api/index?appid=10001&videoUrl=%s&parsesId=%%d" % quote(page_url, safe="!'()*")
+    _pairs = [(YT_PARSE % (pid, quote(page_url, safe="!'()*")), pid) for pid in ids]
+    # 云盘直链（ym4kjx 等）走 fys 的 6 号 4K 通道最稳（稀饭聚合就是这条路，
+    # 实测 4kzj 的 5 号经常回「解析失败」，fys 6 号能出真 2160）
     if "ym4kjx" in page_url or "lyyytv.cn/d/" in page_url or "/d/file/" in page_url:
-        # 实测：parsesId=5 才出移动云/联通云真链（2 已失效），5 失败再退回 2/1
-        ids = (5, 2, 1)
-    for pid in ids:
-        api = YT_PARSE % (pid, quote(page_url, safe="!'()*"))
+        _pairs = [(_FYS_TPL % 6, 6), (_FYS_TPL % 5, 5)] + \
+                 [(YT_PARSE % (pid, quote(page_url, safe="!'()*")), pid) for pid in (5, 2, 1)]
+    for api, pid in _pairs:
         try:
             body = _http_text(api, {"User-Agent": "okhttp/4.12.0",
                                     "Accept-Encoding": "identity"}, 8)
