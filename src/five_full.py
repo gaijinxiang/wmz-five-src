@@ -7047,6 +7047,10 @@ def yt_collect(name, existing=()):
 
 
 CLOUD_NAMES = ("移动云", "天翼云", "联通云", "高码云")
+# 云线备用表：token -> 同集「天堂/四源/河豚」的真 4K token。
+# 移动云/联通云/天翼云这几条都是影探 4K 档，要过第三方解析站，解析站回
+# 「解析失败」时就放不出来；这里记下同集能直出的备份，播放时自动顶上。
+_CLOUD_FB = {}
 
 
 
@@ -16399,6 +16403,19 @@ def _bili_play(play_id):
     return res
 
 def play_content(play_id, flag=""):
+    _r0 = _play_content_impl(play_id, flag)
+    try:
+        if not _dump((_r0 or {}).get("url")) and _CLOUD_FB.get(_dump(play_id)):
+            _fb = _play_content_impl(_CLOUD_FB[_dump(play_id)], flag)
+            if _dump((_fb or {}).get("url")):
+                _fb["msg"] = "这条云线没出流，已自动切到同集真 4K"
+                return _fb
+    except Exception:
+        pass
+    return _r0
+
+
+def _play_content_impl(play_id, flag=""):
     if _dump(play_id).startswith("bl:"):
         return _bili_play(play_id)
     value = _dump(play_id)
@@ -29492,8 +29509,29 @@ def _install_pan_replacer():
                     if _is_nd:
                         continue
                     # 先补一条木偶线（缓存命中时是瞬间的），再补盘基地·百度（只要百度）
-                    # 用户要求：源这边不再加任何线路（木偶/玩偶/小山/网盘都不加），
-                    # 详情原样返回，线路由用户自己加
+                    # 不加线、不改名、不排序，只记一份「云线→同集真4K」的备用表
+                    try:
+                        _fs = [x for x in _dump(_v.get("vod_play_from")).split("$$$") if x]
+                        _us = [x for x in _dump(_v.get("vod_play_url")).split("$$$") if x]
+                        _bk = {}
+                        for _f, _u in zip(_fs, _us):
+                            if any(k in _f for k in ("天堂", "四源", "河豚")):
+                                for _i, _seg in enumerate(_u.split("#")):
+                                    if "$" in _seg:
+                                        _bk.setdefault(_i, _seg.split("$", 1)[1])
+                        for _f, _u in zip(_fs, _us):
+                            if any(k in _f for k in CLOUD_NAMES):
+                                for _i, _seg in enumerate(_u.split("#")):
+                                    if "$" not in _seg:
+                                        continue
+                                    _val = _seg.split("$", 1)[1]
+                                    _b = _bk.get(_i)
+                                    if _b and _b != _val:
+                                        _CLOUD_FB[_val] = _b
+                        while len(_CLOUD_FB) > 2000:
+                            _CLOUD_FB.pop(next(iter(_CLOUD_FB)), None)
+                    except Exception:
+                        pass
                     continue
                     _add_muou_quark_line(_v, 5.0)
                     _add_woyou_line(_v, 6.0)
