@@ -19,8 +19,12 @@ ext：
 }
 """
 import base64
+import glob
+import html as html_lib
 import json
+import os
 import re
+import sys
 import time
 import requests
 from urllib.parse import quote
@@ -38,6 +42,114 @@ PAN_RANK = ["quark", "uc", "baidu", "xunlei"]
 
 _CACHE = {}          # title -> (ts, items)
 _CACHE_TTL = 600
+
+
+# ---------------------------------------------------------------------------
+# 夸克登录：跟本地包「配置中心」同一份 —— 优先读配置中心落盘的 quark_cookie.txt，
+# 读不到再用站点 ext 里手填的。路径探测与五大平台源完全一致。
+# ---------------------------------------------------------------------------
+def local_quark_cookie():
+    cands = []
+    for base in (os.getcwd(), os.path.dirname(os.getcwd())):
+        for sub in ("quark_cookie.txt", "files/quark_cookie.txt",
+                    "lzxw/quark_cookie.txt", "files/lzxw/quark_cookie.txt"):
+            cands.append(os.path.join(base, sub))
+    for _n in ("quark_cookie.txt", "quark.txt", "quark_cookie", "pan_quark.txt",
+               "csp_quark_cookie.txt"):
+        cands.append(os.path.join(os.getcwd(), "lzxw", _n))
+        cands.append(os.path.join(os.getcwd(), "files", "lzxw", _n))
+        cands.append(os.path.join(os.path.dirname(os.getcwd()), "files", "lzxw", _n))
+    cands += ["/quark_cookie.txt", "/sdcard/quark_cookie.txt",
+              "/storage/emulated/0/quark_cookie.txt"]
+    _pkg_dirs = []
+    for _probe in ("/proc/self/cmdline", "/proc/self/maps"):
+        try:
+            _raw = open(_probe, "rb").read(1024 * 512).decode("utf-8", "ignore")
+            for _m in re.finditer(r"/data/(?:user|data)/0/[A-Za-z0-9_.]+", _raw):
+                _pkg_dirs.append(_m.group(0))
+        except Exception:
+            pass
+    for _v in ("ANDROID_APP_PATH", "HOME", "ANDROID_DATA"):
+        _v = os.environ.get(_v, "")
+        if _v:
+            _pkg_dirs.append(_v)
+    for _pd in sys.path:
+        _i = str(_pd).find("/files/")
+        if _i > 0:
+            _pkg_dirs.append(str(_pd)[:_i])
+    _seen = set()
+    for _pd in _pkg_dirs:
+        _pd = _pd.rstrip("/")
+        if not _pd or _pd in _seen:
+            continue
+        _seen.add(_pd)
+        try:
+            cands += glob.glob(_pd + "/files/lzxw/*.json")
+            cands += glob.glob(_pd + "/files/*.json")
+        except Exception:
+            pass
+        for _sub in ("/files/lzxw/quark_cookie.txt", "/files/quark_cookie.txt",
+                     "/lzxw/quark_cookie.txt", "/quark_cookie.txt"):
+            cands.append(_pd + _sub)
+    for _pkg in ("com.github.catvod.spider", "com.fongmi.android.tv",
+                 "com.fongmi.android.tv.debug", "com.catvod", "com.tvbox"):
+        for _root in ("/data/user/0", "/data/data"):
+            cands.append(_root + "/" + _pkg + "/files/lzxw/quark_cookie.txt")
+            cands.append(_root + "/" + _pkg + "/files/quark_cookie.txt")
+        for _root in ("/sdcard/Android/data", "/storage/emulated/0/Android/data"):
+            cands.append(_root + "/" + _pkg + "/files/lzxw/quark_cookie.txt")
+            cands.append(_root + "/" + _pkg + "/files/quark_cookie.txt")
+    cands += ["/sdcard/lzxw/quark_cookie.txt", "/sdcard/Download/lzxw/quark_cookie.txt",
+              "/storage/emulated/0/lzxw/quark_cookie.txt", "/sdcard/Download/quark_cookie.txt",
+              "/sdcard/Documents/quark_cookie.txt", "/storage/emulated/0/Documents/quark_cookie.txt"]
+    try:
+        cands += glob.glob("/sdcard/Android/data/*/files/lzxw/quark_cookie.txt")
+        cands += glob.glob("/storage/emulated/0/Android/data/*/files/lzxw/quark_cookie.txt")
+        cands += glob.glob("/sdcard/lzxw/*cookie*")
+    except Exception:
+        pass
+    # 配置中心也可能把登录态写进 SharedPreferences
+    try:
+        for _pd in _pkg_dirs:
+            for _xml in glob.glob(_pd.rstrip("/") + "/shared_prefs/*.xml"):
+                try:
+                    _raw = open(_xml, "r", encoding="utf-8", errors="ignore").read()
+                    for _m in re.finditer(r'name="([^"]*quark[^"]*)"[^>]*>([^<]+)<', _raw, re.I):
+                        _val = html_lib.unescape(_m.group(2) or "").strip()
+                        if "=" in _val and len(_val) >= 20:
+                            return _val
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    for pth in cands:
+        try:
+            if not pth or not os.path.isfile(pth):
+                continue
+            txt = open(pth, "r", encoding="utf-8", errors="ignore").read().strip()
+            if not txt:
+                continue
+            try:
+                _j = json.loads(txt)
+                if isinstance(_j, dict):
+                    txt = str(_j.get("quark_cookie") or _j.get("cookie") or _j.get("quark") or "")
+            except Exception:
+                pass
+            txt = txt.strip().strip('"').strip("'")
+            if "\n" in txt or "\r" in txt:
+                _parts = []
+                for _ln in re.split(r"\r?\n", txt):
+                    _ln = re.sub(r"^\s*cookie\s*:\s*", "", _ln.strip().strip(";").strip(), flags=re.I)
+                    if _ln and "=" in _ln:
+                        _parts.append(_ln)
+                if _parts:
+                    txt = "; ".join(_parts)
+            txt = re.sub(r"\s*;\s*", "; ", txt).strip(" ;")
+            if "=" in txt and len(txt) >= 20:
+                return txt
+        except Exception:
+            continue
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +413,12 @@ class Spider:
         if not isinstance(e, dict):
             e = {}
         self.ext = e
-        self.q = Quark(e.get("quark_cookie", ""))
-        self.u = UC(e.get("uc_cookie", ""))
+        # 登录：ext 手填 > 本地包配置中心 quark_cookie.txt（与五大平台同一份）
+        ck = str(e.get("quark_cookie", "") or "").strip()
+        if not ck or len(ck) < 20:
+            ck = local_quark_cookie()
+        self.q = Quark(ck)
+        self.u = UC(str(e.get("uc_cookie", "") or ""))
         self.limit = int(e.get("max_files", 60) or 60)
 
     def homeContent(self, filter):
