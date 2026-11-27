@@ -29496,93 +29496,62 @@ def _install_pan_replacer():
                     _add_woyou_line(_v, 6.0)
                     _fs = [x for x in _dump(_v.get("vod_play_from")).split("$$$") if x]
                     _us = [x for x in _dump(_v.get("vod_play_url")).split("$$$") if x]
-                    # 规则：网盘线（含夸克/百度）全部显示；其余线路只留 1 条最优
-                    _pri = {"移动云": 0, "天翼云": 1, "联通云": 2, "高码云": 3,
-                            "河豚": 4, "天堂": 5, "橘汁": 6, "云帧享": 7, "腾讯": 9}
+                    # ===== 重新做的线路面板（朴素规则，不再优选、不改名）=====
+                    _items = list(zip(_fs, _us))
 
-                    def _rk(_t):
-                        _n = _dump(_t[0])
-                        for _k, _v in _pri.items():
-                            if _k in _n:
-                                return _v
-                        return 8
-
-                    def _is_pan(_fl):
-                        # 网盘线只留百度：夸克/UC/腾讯/快映那些一律不上屏
-                        return "百度" in _fl
-
-                    # ===== 线路面板重做：固定 5 条以内，顺序固定，名字不改 =====
-                    _plat_k = ("芒果", "腾讯", "爱奇艺", "优酷", "B站", "哔哩", "搜狐", "乐视")
-
-                    def _nm(_t):
+                    def _n(_t):
                         return _dump(_t[0])
 
-                    def _eps(_u):
+                    def _ep(_u):
                         return len([z for z in _dump(_u).split("#") if z])
 
                     def _direct(_u):
                         _v0 = _dump(_u).split("#")[0].split("$")[-1]
                         return bool(re.search(r"\.(?:m3u8|mp4|flv|mkv|ts)(?:[?#]|$)", _v0, re.I))
 
-                    _items = list(zip(_fs, _us))
-                    # 小山·4K 缺了就现取（缓存 30 分钟，二次打开不花时间）
+                    # 小山·4K 缺就补（缓存 30 分钟）
                     if not any("小山" in _dump(f) for f, _ in _items):
                         try:
                             for _lab, _uu in _xs_episodes(_dump(_v.get("vod_name"))):
                                 _items.append((_lab, _uu))
                         except Exception:
                             pass
-                    _maxn = max([_eps(u) for f, u in _items
-                                 if "百度" not in _dump(f)] or [0])
-                    _minn = max(2, _maxn // 2)
-                    _cl = [i for i in _items
-                           if "百度" not in _nm(i) and "小山" not in _nm(i)
-                           and not any(k in _nm(i) for k in _plat_k)
-                           and _direct(i[1]) and _eps(i[1]) >= _minn]
-                    _cl.sort(key=lambda t: (0 if "4K" in _nm(t) else 1, _rk(t)))
-                    # 云线（移动云/联通云/天翼云/高码云）一条都没有时，放宽集数限制：
-                    # 只要地址是直连媒体就先挂一条，别让面板上一朵云都不剩
-                    if not _cl:
-                        _cl = [i for i in _items
-                               if "百度" not in _nm(i) and "小山" not in _nm(i)
-                               and not any(k in _nm(i) for k in _plat_k)
-                               and _direct(i[1])]
-                        _cl.sort(key=lambda t: (-_eps(t[1]), _rk(t)))
-                    _xs1 = [i for i in _items if "小山" in _nm(i) and "4K" in _nm(i)]
-                    _mg = [i for i in _items if "芒果" in _nm(i)]
-                    _tx = [i for i in _items if "腾讯" in _nm(i)]
-                    _mg.sort(key=lambda t: (0 if "4K" in _nm(t) else 1))
-                    _tx.sort(key=lambda t: (0 if "4K" in _nm(t) else 1))
-                    _bd = [i for i in _items if "百度" in _nm(i)]
-                    _sel = []
+
+                    _pick = []
 
                     def _add(_x):
-                        if not _x:
+                        if not _x or _ep(_x[1]) < 2:
                             return
-                        if any(_nm(_x) == _nm(_y) or _dump(_x[1]) == _dump(_y[1])
-                               for _y in _sel):
+                        if any(_n(_x) == _n(_y) for _y in _pick):
                             return
-                        _sel.append(_x)
+                        _pick.append(_x)
 
-                    if _cl:
-                        _add(_cl[0])          # ① 云/4K（集数够、直连）
-                    if _xs1:
-                        _add(_xs1[0])         # ② 小山·4K
-                    if _mg:
-                        _add(_mg[0])          # ③ 芒果
-                    if _tx:
-                        _add(_tx[0])          # ④ 腾讯
-                    if _bd:
-                        _add(_bd[0])          # ⑤ 百度网盘
-                    if len(_sel) < 2:
-                        for _x in _items:
-                            if "百度" not in _nm(_x) and _eps(_x[1]) >= _minn:
-                                _add(_x)
-                                if len(_sel) >= 2:
-                                    break
-                    if len(_sel) < 2 and _items:
-                        _sel = _items[:3]
-                    _keep = _sel[:5]
+                    # ① 4K / 云直连，最多 2 条（集数多的优先）
+                    _c4 = [i for i in _items
+                           if _direct(i[1]) and ("4K" in _n(i) or "云" in _n(i))
+                           and "百度" not in _n(i) and "小山" not in _n(i)]
+                    _c4.sort(key=lambda t: -_ep(t[1]))
+                    for _i in _c4[:2]:
+                        _add(_i)
+                    # ② 芒果 / 腾讯 / 爱奇艺 各 1 条（有 4K 先 4K）
+                    for _kw in ("芒果", "腾讯", "爱奇艺"):
+                        _cd = [i for i in _items if _kw in _n(i)]
+                        _cd.sort(key=lambda t: (0 if "4K" in _n(t) else 1, -_ep(t[1])))
+                        _add(_cd[0] if _cd else None)
+                    # ③ 小山·4K
+                    _xs = [i for i in _items if "小山" in _n(i)]
+                    _xs.sort(key=lambda t: (0 if "蓝光4K" in _n(t) else 1))
+                    _add(_xs[0] if _xs else None)
+                    # ④ 百度网盘 1 条
+                    _bd = [i for i in _items if "百度" in _n(i)]
+                    _add(_bd[0] if _bd else None)
+                    # 兜底：不足 2 条就按原顺序补
+                    if len(_pick) < 2:
+                        for _i in _items:
+                            _add(_i)
+                            if len(_pick) >= 2:
+                                break
+                    _keep = _pick[:6]
                     if _keep:
                         _v["vod_play_from"] = "$$$".join(f for f, _ in _keep)
                         _v["vod_play_url"] = "$$$".join(u for _, u in _keep)
