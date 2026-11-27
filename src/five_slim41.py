@@ -7,13 +7,13 @@ import time
 import urllib.request
 
 _RAW = "https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/five_full.py"
-_GZ = "https://raw.githubusercontent.com/gaijinxiang/gaijinxiang/wmz-five-src/f90d4155eba6452f9822c104dfff06eda59302a0/src/five_full.py.gz"
+_GZ = "https://raw.githubusercontent.com/gaijinxiang/gaijinxiang/wmz-five-src/af447bf21f1c1875dd178b5be72df2382b1b9135/src/five_full.py.gz"
 # 实测 ghfast 拉 1.4MB 要 20 秒以上，壳会判超时；gh-proxy 只要 3 秒，放第一位
-_JP = "https://gcore.jsdelivr.net/gh/gaijinxiang/wmz-five-src@f90d4155eba6452f9822c104dfff06eda59302a0/src/five_full.py.gz"
+_JP = "https://gcore.jsdelivr.net/gh/gaijinxiang/wmz-five-src@af447bf21f1c1875dd178b5be72df2382b1b9135/src/five_full.py.gz"
 _SRC = _JP
 _MIRRORS = [
     _JP,
-    "https://testingcf.jsdelivr.net/gh/gaijinxiang/wmz-five-src@f90d4155eba6452f9822c104dfff06eda59302a0/src/five_full.py.gz",
+    "https://testingcf.jsdelivr.net/gh/gaijinxiang/wmz-five-src@af447bf21f1c1875dd178b5be72df2382b1b9135/src/five_full.py.gz",
     "https://gh-proxy.com/" + _GZ,
     "https://ghfast.top/" + _GZ,
     "https://gh-proxy.com/" + _RAW,
