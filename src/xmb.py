@@ -30959,7 +30959,7 @@ def _sx_baidu_shares(name, budget=6.0):
                 links = _sx_pan_links(txt)
                 if links:
                     for u in links[:6]:
-                        res.append(('网盘·双星·百度网盘', u))
+                        res.append(('双星·网盘·百度网盘', u))
                     box['v'] = res
                     return
                 # 搜到了帖子标题，再进详情页抠链接
@@ -30972,7 +30972,7 @@ def _sx_baidu_shares(name, budget=6.0):
                         full = urllib.parse.urljoin(host, href)
                         body = _sx_get(full, min(4.0, dl - time.time()))
                         for u in _sx_pan_links(body)[:3]:
-                            res.append(('网盘·双星·百度网盘', u))
+                            res.append(('双星·网盘·百度网盘', u))
                         if res:
                             box['v'] = res
                             return
@@ -31397,17 +31397,17 @@ class Spider(XMFCore):
             def _feed():
                 try:
                     if _one_share:
-                        _q_.put(('网盘·百度网盘', _one_share))
+                        _q_.put(('指定·网盘·百度网盘', _one_share))
                         return
                     for _tag, _f, _u in _nd_baidu_shares(_nm_bd, 5.0)[:5]:
-                        _q_.put(('网盘·%s·百度网盘' % _tag, _u))
+                        _q_.put(('%s·网盘·百度网盘' % _tag, _u))
                     try:
                         for _sl, _su in _sx_baidu_shares(_nm_bd, 6.0)[:6]:
                             _q_.put((_sl, _su))
                     except Exception:
                         pass
                     for _t, _u in _pansou_baidu(_nm_bd, 5.0)[:8]:
-                        _q_.put(('网盘·百度网盘', _u))
+                        _q_.put(('盘搜·网盘·百度网盘', _u))
                 except Exception:
                     pass
 
