@@ -29583,16 +29583,19 @@ def _install_pan_replacer():
                             _keep.append((f, u))   # 官方 4K / 蓝光
                         elif any((f, u) == x for x in _xs_keep):
                             _keep.append((f, u))   # 小山 4K / 蓝光4K
-                    # 集数对齐：网盘线的集数必须和官方/云线相等，凑不齐的网盘线不上屏
-                    _ref = 0
-                    for f, u in _keep:
-                        if not _is_pan(_dump(f)):
-                            _ref = len([x for x in _dump(u).split("#") if x])
-                            break
-                    if _ref:
-                        _keep = [(f, u) for f, u in _keep
-                                 if (not _is_pan(_dump(f))) or
-                                 len([x for x in _dump(u).split("#") if x]) == _ref]
+                    # 网盘（百度）必须上屏：以前按「集数要和官方相等」整条丢弃，
+                    # 结果官方 24 集、网盘 23 集时网盘直接消失，用户看不到可选项。
+                    # 现在不砍，集数少就让用户自己看；只留 1 条百度线，别重复刷屏。
+                    # 网盘线只留 1 条（快映/木偶/玩偶都带百度，留一条就够）
+                    _pan_n = 0
+                    _k2 = []
+                    for _ff, _uu in _keep:
+                        if _is_pan(_dump(_ff)):
+                            _pan_n += 1
+                            if _pan_n > 1:
+                                continue
+                        _k2.append((_ff, _uu))
+                    _keep = _k2
                     # 兜底：过滤后只剩 1 条（或一条不剩）说明规则把可选线路掐光了，
                     # 这时退回原始列表前 4 条（保持源站原名），至少让用户有得选
                     if len(_keep) < 2 and len(_fs) > len(_keep):
