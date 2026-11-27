@@ -12511,6 +12511,15 @@ def _local_bd_cookie():
     try:
         cands += glob.glob("/sdcard/Android/data/*/files/lzxw/*baidu*")
         cands += glob.glob("/storage/emulated/0/Android/data/*/files/lzxw/*baidu*")
+        # 配置中心不一定按 baidu_cookie.txt 命名：把 lzxw / files 下的文件全扫一遍，
+        # 谁的内容里有 BDUSS 就是百度登录
+        for _base in (os.getcwd(), os.path.dirname(os.getcwd())):
+            for _sub in ("lzxw", "files/lzxw", "files"):
+                try:
+                    for _f in glob.glob(os.path.join(_base, _sub, "*")):
+                        cands.append(_f)
+                except Exception:
+                    pass
     except Exception:
         pass
     for _p in cands:
