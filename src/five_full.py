@@ -29523,6 +29523,29 @@ def _install_pan_replacer():
                                 for _i, _seg in enumerate(_u.split("#")):
                                     if "$" in _seg:
                                         _bk.setdefault(_i, _seg.split("$", 1)[1])
+                        # 稀饭那套的做法（_fix_cloud_to_four）：影探云线常常只挂一条
+                        # 地址（面板显示「1 个视频」），这条地址本身是云盘原链、点开还要
+                        # 过 fys 换链，很容易整域 404 黑屏。所以这里直接把这些云线的集表
+                        # 换成同集已验活的真 4K（四源4K/河豚/天堂/咕噜/橘汁）整季地址，
+                        # 名字一个字不动，只是让点下去真有画面。
+                        _donor = None
+                        _dep = 0
+                        for _f, _u in zip(_fs, _us):
+                            if any(k in _f for k in ("四源", "河豚", "天堂", "咕噜", "橘汁", "华谊")):
+                                _n = len([z for z in _dump(_u).split("#") if z])
+                                if _n > _dep and _u:
+                                    _dep, _donor = _n, _u
+                        _fixed = False
+                        if _donor and _dep >= 2:
+                            for _i2, _f2 in enumerate(_fs):
+                                if not any(k in _f2 for k in CLOUD_NAMES):
+                                    continue
+                                _n2 = len([z for z in _dump(_us[_i2]).split("#") if z])
+                                if _n2 < _dep:
+                                    _us[_i2] = _donor
+                                    _fixed = True
+                        if _fixed:
+                            _v["vod_play_url"] = "$$$".join(_us)
                         for _f, _u in zip(_fs, _us):
                             if any(k in _f for k in CLOUD_NAMES):
                                 for _i, _seg in enumerate(_u.split("#")):
