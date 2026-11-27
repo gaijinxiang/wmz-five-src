@@ -20,6 +20,17 @@
       }
     },
     {
+      "key": "miansao",
+      "name": "🌐免扫丨网盘聚合",
+      "type": 3,
+      "api": "https://gcore.jsdelivr.net/gh/gaijinxiang/wmz-five-src@main/src/miansao.py",
+      "searchable": 1,
+      "quickSearch": 1,
+      "filterable": 1,
+      "changeable": 1,
+      "timeout": 40
+    },
+    {
       "key": "橘汁",
       "name": "🍊橘汁丨4K",
       "type": 3,
