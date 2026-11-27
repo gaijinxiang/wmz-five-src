@@ -28454,6 +28454,10 @@ def _install_pan_replacer():
                     _off_keep = [x for x in _offs if ("4K" in _dump(x[0]) or "4k" in _dump(x[0]))][:2]
                     if not _off_keep and _offs:
                         _off_keep = [min(_offs, key=_off_rank)]
+                    # 腾讯视频官方线必须有一条（优先 4K）
+                    _tx = [x for x in _offs if "腾讯" in _dump(x[0])]
+                    if _tx and not any("腾讯" in _dump(x[0]) for x in _off_keep):
+                        _off_keep.append(min(_tx, key=_off_rank))
                     # 芒果TV 的线路能用，单独保一条（没有 4K 时它就是主力）
                     _mg = [x for x in _offs if "芒果" in _dump(x[0])]
                     if _mg and not any("芒果" in _dump(x[0]) for x in _off_keep):
