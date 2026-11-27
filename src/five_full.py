@@ -28527,7 +28527,12 @@ def _install_pan_replacer():
                                  if (not _is_pan(_dump(f))) or
                                  len([x for x in _dump(u).split("#") if x]) == _ref]
                     # 精选：把最优那条云/4K 改名为「五大平台·精选4K」并加实测速度，排在最前
-                    _pick = next((x for x in _keep if not _is_pan(_dump(x[0]))), None)
+                    # 只有「云/4K」这类直连线路才改名成精选；腾讯/芒果等官方平台线
+                    # 保留原名，免得「腾讯·4K」被改名吞掉、面板上一条腾讯都没了
+                    _PLAT = ("腾讯", "芒果", "爱奇艺", "优酷", "B站", "哔哩", "搜狐", "乐视")
+                    _pick = next((x for x in _keep
+                                  if not _is_pan(_dump(x[0]))
+                                  and not any(_k in _dump(x[0]) for _k in _PLAT)), None)
                     if _pick:
                         _pu = [z.split("$")[-1] for z in _dump(_pick[1]).split("#") if z]
                         _tag = _speed_tag(_pu[0]) if _pu else ""
