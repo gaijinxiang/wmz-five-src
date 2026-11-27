@@ -29534,6 +29534,13 @@ def _install_pan_replacer():
                                if not _is_pan(_dump(f)) and _is_cloud(_dump(f))]
                     _offs = [(f, u) for f, u in zip(_fs, _us)
                              if not _is_pan(_dump(f)) and not _is_cloud(_dump(f)) and _is_official(_dump(f))]
+                    # 云线必须是「直连媒体」才算：4K 名字挂在解析页/令牌上的（影探·腾讯·4K、
+                    # 小蜜蜂那种）点了还要二次解析，选它当最优就是点开黑屏
+                    def _is_direct(_u):
+                        _first = _dump(_u).split("#")[0]
+                        _v0 = _first.split("$")[-1]
+                        return bool(re.search(r"\.(?:m3u8|mp4|flv|mkv|ts)(?:[?#]|$)", _v0, re.I))
+                    _clouds = [x for x in _clouds if _is_direct(x[1])]
                     _best_c = min(_clouds, key=_rk) if _clouds else None
 
                     def _off_rank(_t):
@@ -29586,27 +29593,17 @@ def _install_pan_replacer():
                         _keep = [(f, u) for f, u in _keep
                                  if (not _is_pan(_dump(f))) or
                                  len([x for x in _dump(u).split("#") if x]) == _ref]
-                    # 精选：把最优那条云/4K 改名为「五大平台·精选4K」并加实测速度，排在最前
+                    # 兜底：过滤后只剩 1 条（或一条不剩）说明规则把可选线路掐光了，
+                    # 这时退回原始列表前 4 条（保持源站原名），至少让用户有得选
+                    if len(_keep) < 2 and len(_fs) > len(_keep):
+                        _keep = list(zip(_fs, _us))[:4]
                     # 只有「云/4K」这类直连线路才改名成精选；腾讯/芒果等官方平台线
                     # 保留原名，免得「腾讯·4K」被改名吞掉、面板上一条腾讯都没了
                     _PLAT = ("腾讯", "芒果", "爱奇艺", "优酷", "B站", "哔哩", "搜狐", "乐视", "小山")
-                    _pick = next((x for x in _keep
-                                  if not _is_pan(_dump(x[0]))
-                                  and not any(_k in _dump(x[0]) for _k in _PLAT)), None)
-                    # 只有实测真的能拉出字节的线路才配叫「精选」；测不出来就当没有精选，
-                    # 保留原来的「移动云/联通云/4K」真名，免得改了名又播不了
-                    if _pick:
-                        _pu = [z.split("$")[-1] for z in _dump(_pick[1]).split("#") if z]
-                        _tag = _speed_tag(_pu[0]) if _pu else ""
-                        if not _tag:
-                            _pick = None
-                    if _pick:
-                        _q = "4K" if "4K" in _dump(_pick[0]) else "精选"
-                        _newname = "五大平台·精选%s%s" % (_q, _tag)
-                        _keep = [(_newname if (f, u) == _pick else f, u) for f, u in _keep]
-                        _keep = [(f, u) for f, u in _keep if (f, u) == (_newname, _pick[1])] + \
-                                [(f, u) for f, u in _keep if (f, u) != (_newname, _pick[1])]
-                    if _keep and (len(_keep) != len(_fs) or _pick):
+                    # 精选/速度标注整段已下线：改名会让播放器认不出线路、也会把面板
+                    # 压成一条，用户点开就是黑屏。线路名一律保持源站原名。
+                    _pick = None
+                    if _keep:
                         _v["vod_play_from"] = "$$$".join(f for f, _ in _keep)
                         _v["vod_play_url"] = "$$$".join(u for _, u in _keep)
             except Exception:
