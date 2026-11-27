@@ -20,17 +20,6 @@
       }
     },
     {
-      "key": "miansao",
-      "name": "🌐免扫丨网盘聚合",
-      "type": 3,
-      "api": "https://gcore.jsdelivr.net/gh/gaijinxiang/wmz-five-src@main/src/miansao.py",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
-      "changeable": 1,
-      "timeout": 40
-    },
-    {
       "key": "橘汁",
       "name": "🍊橘汁丨4K",
       "type": 3,
@@ -49,21 +38,6 @@
         "version": "3.0.8.0",
         "decrypt": "1",
         "vApp": "3027"
-      },
-      "timeout": 60
-    },
-    {
-      "key": "指南",
-      "name": "💿原盘｜4K_iso",
-      "type": 3,
-      "api": "csp_4KZhinan",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
-      "ext": {
-        "site": [
-          "https://4kzn.cc"
-        ]
       },
       "timeout": 60
     },
@@ -103,16 +77,6 @@
           "http://www.muoua.top"
         ]
       },
-      "timeout": 60
-    },
-    {
-      "key": "移动",
-      "name": "🌐移动丨4K免扫",
-      "type": 3,
-      "api": "csp_Yidong4K",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
       "timeout": 60
     },
     {
