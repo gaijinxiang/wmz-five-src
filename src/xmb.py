@@ -30956,26 +30956,36 @@ def _sx_baidu_shares(name, budget=6.0):
                 except Exception:
                     continue
                 txt = _sx_get(host + q, dl - time.time())
-                links = _sx_pan_links(txt)
-                if links:
-                    for u in links[:6]:
-                        res.append(('双星·网盘·百度网盘', u))
+                if not txt:
+                    continue
+                for u in _sx_pan_links(txt)[:6]:
+                    res.append(('双星·网盘·百度网盘', u))
+                if res:
                     box['v'] = res
                     return
-                # 搜到了帖子标题，再进详情页抠链接
-                if 'star2' in txt and name[:4] in txt:
-                    for href in re.findall(r'href="([^"]{4,120})"', txt):
-                        if time.time() > dl:
-                            break
-                        if not any(k in href for k in ('/archives/', '/post/', '/p/', '/thread')):
-                            continue
-                        full = urllib.parse.urljoin(host, href)
-                        body = _sx_get(full, min(4.0, dl - time.time()))
-                        for u in _sx_pan_links(body)[:3]:
-                            res.append(('双星·网盘·百度网盘', u))
-                        if res:
-                            box['v'] = res
-                            return
+                if name[:3] not in txt:
+                    continue
+                posts = []
+                for h in re.findall(r'href="([^"]{4,140})"', txt):
+                    if h.startswith(('javascript', '#', 'mailto')):
+                        continue
+                    if any(k in h.lower() for k in ('search', 'cate', 'tag', 'login',
+                                                    'about', 'page=', '?s=', 'rss')):
+                        continue
+                    if re.search(r'/\d{3,}', h) or any(k in h for k in ('/archives/', '/post/')):
+                        full = urllib.parse.urljoin(host, h)
+                        if full not in posts:
+                            posts.append(full)
+                for full in posts[:6]:
+                    left = dl - time.time()
+                    if left < 1.5:
+                        break
+                    body = _sx_get(full, min(4.0, left))
+                    for u in _sx_pan_links(body)[:3]:
+                        res.append(('双星·网盘·百度网盘', u))
+                if res:
+                    box['v'] = res
+                    return
         box['v'] = res
 
     t = threading.Thread(target=_work, daemon=True)
