@@ -6891,7 +6891,9 @@ def _yt_parse(page_url):
                                                "obs.cn-", "myhuaweicloud", "aliyuncs")):
                 found = url
                 break
-            if _yt_alive(url):
+            # m3u8 只要解析站给了地址就直接用：再发一次 HEAD/分片探测经常被 CDN
+            # 403 掉，探失败就等于把好链判死（稀饭那套也是拿到就播，不再探）
+            if ".m3u8" in url.lower() or _yt_alive(url):
                 found = url
                 break
     # 解析结果缓存 15 分钟：同一集反复点/切集重试不用再走一次 fys
