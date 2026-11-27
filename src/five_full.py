@@ -12576,7 +12576,7 @@ def _pj_decrypt(enc, title=""):
 
 
 def _panjidi_baidu_line(name, budget=8.0):
-    """搜盘基地 → 只取百度分享 → 列文件出选集令牌（BD~ 由 _bd_play_bridge 播）"""
+    """盘基地 → 只取百度分享 → 走木偶同一套：官方 share/list 列集 + 9978 百度代理播放"""
     key = _nd_key(name) or _dump(name)
     if not key:
         return None
@@ -12596,25 +12596,34 @@ def _panjidi_baidu_line(name, budget=8.0):
                 return
             _nk = _norm(key)
             _cand = [i for i in _items if i.get("is_type") == "baidu"]
-            # 片名对得上的排前面
             _cand.sort(key=lambda i: 0 if _norm(i.get("title")) == _nk else
                        (1 if _nk in _norm(i.get("title")) or _norm(i.get("title")) in _nk else 2))
-            for _it in _cand[:3]:
+            for _it in _cand[:4]:
                 _share = _pj_decrypt(_it.get("url"), _it.get("title"))
-                if not _share or "pan.baidu.com" not in _share:
+                _m = re.search(r"pan\.baidu\.com/s/1([A-Za-z0-9_-]+)", _share or "")
+                if not _m:
                     continue
+                _surl = _m.group(1)
+                _pwd = (urllib.parse.parse_qs(urllib.parse.urlparse(_share).query).get("pwd") or [""])[0]
                 try:
-                    _fs = BaiduDrive(_local_bd_cookie() or BD_COOKIE).walk(_share, limit=500)
+                    _items2 = _bd_list(_surl, _pwd)
                 except Exception:
-                    _fs = []
-                if not _fs:
+                    _items2 = []
+                _files = []
+                for _f in _items2:
+                    _nm = _dump(_f.get("server_filename"))
+                    if _f.get("isdir"):
+                        continue
+                    if re.search(r"\.(mp4|mkv|ts|avi|mov|flv|wmv|m4v)$", _nm, re.I):
+                        _files.append((_nm, _dump(_f.get("fs_id"))))
+                if len(_files) < 2:
                     continue
-                _eps = []
-                for _i, _f in enumerate(_fs):
-                    _tok = json.dumps({"u": _share, "p": _f.get("path", ""),
-                                       "f": _f.get("fs_id", "")}, ensure_ascii=False)
-                    _eps.append("第%02d集$BD~%s" % (_i + 1, quote(_tok, safe="")))
-                _box["line"] = ("盘基地·百度", "#".join(_eps))
+                _files.sort(key=lambda x: x[0])
+                # 播放交给本地包自己的百度代理（和木偶·百度同一条链路）
+                _eps = ["第%d集$http://127.0.0.1:9978/proxy?do=pan&site=baidu&shareId=%s"
+                        "&fileId=%s&fileToken=" % (i + 1, _surl, _fid)
+                        for i, (_nm, _fid) in enumerate(_files)]
+                _box["line"] = ("盘基地·百度%d集" % len(_eps), "#".join(_eps))
                 return
         except Exception:
             pass
