@@ -28365,15 +28365,43 @@ def _install_pan_replacer():
                     def _is_pan(_fl):
                         return ("网盘" in _fl) or ("夸克" in _fl) or ("玩偶" in _fl) or ("木偶" in _fl)
 
-                    _others = [(f, u) for f, u in zip(_fs, _us) if not _is_pan(_dump(f))]
-                    _best = min(_others, key=_rk) if _others else None
+                    # 其它线路分两类，各留 1 条：① 云/4K 直连最优 ② 官方蓝光/官方线
+                    _cloud_k = ("移动云", "天翼云", "联通云", "高码云", "河豚",
+                                "天堂", "橘汁", "云帧享")
+
+                    def _is_cloud(_fl):
+                        return any(k in _fl for k in _cloud_k) or ("4K" in _fl and "官方" not in _fl)
+
+                    def _is_official(_fl):
+                        return ("蓝光" in _fl) or ("官方" in _fl) or any(
+                            p in _fl for p in ("爱奇艺", "腾讯", "优酷", "芒果", "B站", "哔哩"))
+
+                    _clouds = [(f, u) for f, u in zip(_fs, _us)
+                               if not _is_pan(_dump(f)) and _is_cloud(_dump(f))]
+                    _offs = [(f, u) for f, u in zip(_fs, _us)
+                             if not _is_pan(_dump(f)) and not _is_cloud(_dump(f)) and _is_official(_dump(f))]
+                    _best_c = min(_clouds, key=_rk) if _clouds else None
+
+                    def _off_rank(_t):
+                        _n = _dump(_t[0])
+                        if "蓝光" in _n:
+                            return 0
+                        if "1080" in _n:
+                            return 1
+                        if "720" in _n:
+                            return 3
+                        return 2
+
+                    _best_o = min(_offs, key=_off_rank) if _offs else None
                     _keep = []
                     for f, u in zip(_fs, _us):
                         _fl = _dump(f)
                         if _is_pan(_fl):
                             _keep.append((f, u))
-                        elif _best is not None and f == _best[0] and u == _best[1]:
-                            _keep.append((f, u))   # 其它线路只留这一条
+                        elif _best_c is not None and (f, u) == _best_c:
+                            _keep.append((f, u))   # 云/4K 最优 1 条
+                        elif _best_o is not None and (f, u) == _best_o:
+                            _keep.append((f, u))   # 官方蓝光/官方线 1 条
                     if _keep and len(_keep) != len(_fs):
                         _v["vod_play_from"] = "$$$".join(f for f, _ in _keep)
                         _v["vod_play_url"] = "$$$".join(u for _, u in _keep)
