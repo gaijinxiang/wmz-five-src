@@ -28471,6 +28471,16 @@ def _install_pan_replacer():
                             _keep.append((f, u))   # 云/4K 最优 1 条
                         elif any((f, u) == x for x in _off_keep):
                             _keep.append((f, u))   # 官方 4K / 蓝光
+                    # 集数对齐：网盘线的集数必须和官方/云线相等，凑不齐的网盘线不上屏
+                    _ref = 0
+                    for f, u in _keep:
+                        if not _is_pan(_dump(f)):
+                            _ref = len([x for x in _dump(u).split("#") if x])
+                            break
+                    if _ref:
+                        _keep = [(f, u) for f, u in _keep
+                                 if (not _is_pan(_dump(f))) or
+                                 len([x for x in _dump(u).split("#") if x]) == _ref]
                     if _keep and len(_keep) != len(_fs):
                         _v["vod_play_from"] = "$$$".join(f for f, _ in _keep)
                         _v["vod_play_url"] = "$$$".join(u for _, u in _keep)
