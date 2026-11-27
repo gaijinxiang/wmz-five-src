@@ -28370,6 +28370,51 @@ def _pan_detail_many(sp, ids, workers=4):
     return [_by.get(x) for x in ids]
 
 
+def _speed_tag(u, budget=0.9):
+    """实测首集速率，返回 \"[4K·0.2MB/s]\" 这类标注；测不出返回空串"""
+    try:
+        _u = _dump(u)
+        if not _u.startswith("http"):
+            return ""
+        if ".m3u8" in _u:
+            # m3u8 只有索引：先拿播放表，再测第一个分片
+            try:
+                _m = requests.get(_u, headers={"User-Agent": UA}, timeout=1.2)
+                _lines = [x.strip() for x in (_m.text or "").split("\n") if x.strip()]
+                _seg = next((x for x in _lines if not x.startswith("#")), "")
+                if not _seg:
+                    return ""
+                from urllib.parse import urljoin as _uj
+                _u = _uj(_u, _seg)
+            except Exception:
+                return ""
+        _t = time.time()
+        _got = 0
+        r = requests.get(_u, headers={"User-Agent": UA}, stream=True,
+                         timeout=budget + 0.5, allow_redirects=True)
+        if getattr(r, "status_code", 0) not in (200, 206):
+            try:
+                r.close()
+            except Exception:
+                pass
+            return ""
+        for _c in r.iter_content(65536):
+            _got += len(_c)
+            if time.time() - _t > budget or _got >= 393216:
+                break
+        try:
+            r.close()
+        except Exception:
+            pass
+        _dt = max(time.time() - _t, 0.01)
+        _mb = _got / 1048576.0 / _dt
+        if _mb <= 0:
+            return ""
+        return "[4K·%.1fMB/s]" % _mb if _mb >= 0.1 else "[4K·<0.1MB/s]"
+    except Exception:
+        return ""
+
+
 def _install_pan_replacer():
     for _name in ("Spider", "DoubanSpider"):
         _cls = globals().get(_name)
@@ -28481,7 +28526,17 @@ def _install_pan_replacer():
                         _keep = [(f, u) for f, u in _keep
                                  if (not _is_pan(_dump(f))) or
                                  len([x for x in _dump(u).split("#") if x]) == _ref]
-                    if _keep and len(_keep) != len(_fs):
+                    # 精选：把最优那条云/4K 改名为「五大平台·精选4K」并加实测速度，排在最前
+                    _pick = next((x for x in _keep if not _is_pan(_dump(x[0]))), None)
+                    if _pick:
+                        _pu = [z.split("$")[-1] for z in _dump(_pick[1]).split("#") if z]
+                        _tag = _speed_tag(_pu[0]) if _pu else ""
+                        _q = "4K" if "4K" in _dump(_pick[0]) else "精选"
+                        _newname = "五大平台·精选%s%s" % (_q, _tag)
+                        _keep = [(_newname if (f, u) == _pick else f, u) for f, u in _keep]
+                        _keep = [(f, u) for f, u in _keep if (f, u) == (_newname, _pick[1])] + \
+                                [(f, u) for f, u in _keep if (f, u) != (_newname, _pick[1])]
+                    if _keep and (len(_keep) != len(_fs) or _pick):
                         _v["vod_play_from"] = "$$$".join(f for f, _ in _keep)
                         _v["vod_play_url"] = "$$$".join(u for _, u in _keep)
             except Exception:
