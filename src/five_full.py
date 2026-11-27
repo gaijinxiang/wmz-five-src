@@ -29586,8 +29586,8 @@ def _install_pan_replacer():
                             _keep.append((f, u))
                         elif _is_pan(_fl):
                             _keep.append((f, u))
-                        elif _best_c is not None and (f, u) == _best_c:
-                            _keep.append((f, u))   # 云/4K 最优 1 条
+                        elif (f, u) in _clouds:
+                            _keep.append((f, u))   # 云/4K 直连线全留，不再「优选一条」
                         elif any((f, u) == x for x in _off_keep):
                             _keep.append((f, u))   # 官方 4K / 蓝光
                         elif any((f, u) == x for x in _xs_keep):
