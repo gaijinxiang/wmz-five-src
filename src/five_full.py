@@ -1137,6 +1137,11 @@ class Spider:
             if not isinstance(ext, dict):
                 ext = {}
             self._site_ext = ext
+            self.nd_site = _dump(ext.get("nd_site", "")).strip()
+            self.nd_url = _dump(ext.get("nd_url", "")).strip()
+            if self.nd_url:
+                global _ND_URL_HINT
+                _ND_URL_HINT = self.nd_url
             try:
                 global _SITE_QUARK_COOKIE
                 _ck0 = _dump(ext.get("quark_cookie", "")).strip()
@@ -1208,6 +1213,25 @@ class Spider:
 
     def detailContent(self, ids):
         vid = self._first_id(ids)
+        _nd = getattr(self, "nd_site", "")
+        if _nd:
+            try:
+                _v = _nd_site_detail(_nd + "@" + _dump(vid).split("@")[-1])
+                if _v:
+                    return {"list": [_v]}
+            except Exception:
+                pass
+            return {"list": []}
+        # 搜索里补出来的木偶条目：直连木偶站点解析详情页网盘
+        if str(vid).startswith("木偶@"):
+            try:
+                _v = _nd_site_detail(vid)
+                if _v and _dump(_v.get("vod_play_from")):
+                    self._capsule_flags.update(
+                        [x for x in _dump(_v.get("vod_play_from")).split("$$$") if x])
+                    return {"list": [_v]}
+            except Exception:
+                pass
         # 搜索里补出来的玩偶条目：直接解析玩偶详情页，不能当小蜜蜂 vid 去拼 /detail/xxx.html
         if str(vid).startswith("玩偶@"):
             try:
@@ -1266,6 +1290,21 @@ class Spider:
                       "vod_remarks": _rem, "vod_content": "",
                       "vod_play_from": "$$$".join(fs), "vod_play_url": "$$$".join(us)}
                 return {'list': [_v]}
+            except Exception:
+                pass
+        # 搜索页补出来的木偶/剧透/快映条目：交给聚合客户端解析详情，
+        # 只建线路、不预热，保证点开不空
+        if str(vid).split("@", 1)[0] in ("木偶", "剧透", "快映") and "@" in str(vid):
+            try:
+                _ob = _agg_client()
+                _d = (_ob.detailContent([str(vid)]) or {}).get("list") or []
+                if _d:
+                    _v = _d[0]
+                    _fs = [x for x in _dump(_v.get("vod_play_from")).split("$$$") if x]
+                    _us = [x for x in _dump(_v.get("vod_play_url")).split("$$$") if x]
+                    if _fs:
+                        self._capsule_flags.update(_fs)
+                        return {'list': [_v]}
             except Exception:
                 pass
         # 官方搜索结果：一条结果就把所有官方平台 + 网盘线集合到一起
@@ -1604,8 +1643,14 @@ class Spider:
                     _bg["wg"] = _wogg_search_vods(_key, 2)
                 except Exception:
                     _bg["wg"] = []
+            def _bg_nd():
+                try:
+                    _bg["nd"] = _nd_search_vods4(_key, 4)
+                except Exception:
+                    _bg["nd"] = []
             _t1 = _th.Thread(target=_bg_official, daemon=True); _t1.start()
             _t2 = _th.Thread(target=_bg_wogg, daemon=True); _t2.start()
+            _t3 = _th.Thread(target=_bg_nd, daemon=True); _t3.start()
         except Exception:
             _bg = {}
         # 三个关键词变体并发抓：原来串行每个 2~4 秒，设备端搜索总超时就显示 0 条
@@ -1649,6 +1694,12 @@ class Spider:
                 return 1
             return 2
         items.sort(key=_rank)
+        # 搜索命中的片先预热木偶百度线，点进详情就不用现场等 10 秒
+        try:
+            for _it in items[:2]:
+                _warm_muou(_dump(_it.get("vod_name")))
+        except Exception:
+            pass
         # 临时版本标记：确认设备真的加载了这版 py，而不是还在跑旧缓存
         try:
             if items:
@@ -1663,6 +1714,15 @@ class Spider:
             _wv = _bg.get("wg") if _bg else _wogg_search_vods(_key, 2)
             if _wv:
                 items[1:1] = _wv
+            # 玩偶/木偶/剧透/快映 四个网盘站的搜索结果
+            try:
+                if _bg:
+                    _t3.join(4.0)
+                _nv = _bg.get("nd") if _bg else _nd_search_vods4(_key, 4)
+            except Exception:
+                _nv = []
+            if _nv:
+                items[1:1] = _nv
         except Exception:
             pass
         # 官方平台搜索的条目也一起给（腾讯/爱奇艺/优酷/芒果）
@@ -12208,6 +12268,398 @@ def _wogg_search_vods(key, limit=2):
 
 
 
+def _nd_search_vods4(key, limit=4):
+    """搜索页补「玩偶/木偶/剧透/快映」四个网盘站的条目（只搜列表，不解析详情）。
+    详情页点进去仍由网盘详情分支处理，所以这里只花搜索时间，不拖详情。"""
+    # 直连站点搜索，不经过聚合客户端（手机端起不来那个）
+    if not _sw("ndsearch", 1):
+        return []
+    try:
+        import threading as _th
+        _got = {}
+        def _one(_sid):
+            try:
+                _got[_sid] = _nd_site_search(key, _sid, 2)
+            except Exception:
+                _got[_sid] = []
+        _ts = [_th.Thread(target=_one, args=(s,), daemon=True) for s in ("玩偶", "木偶")]
+        for t in _ts:
+            t.start()
+        for t in _ts:
+            t.join(4.5)
+        rows = (_got.get("玩偶") or []) + (_got.get("木偶") or [])
+    except Exception:
+        rows = []
+    except Exception:
+        return []
+    out = []
+    for v in rows:
+        _nm = _dump(v.get("vod_name"))
+        if not _nm:
+            continue
+        out.append({"vod_id": _dump(v.get("vod_id")),
+                    "vod_name": _nm,
+                    "vod_pic": _dump(v.get("vod_pic")),
+                    "vod_remarks": _dump(v.get("vod_remarks"))})
+        if len(out) >= limit:
+            break
+    return out
+
+
+_ND_SEARCH_TTL = {}
+_ND_URL_HINT = ""
+def _nd_site_cfg(sid):
+    """取 玩偶/木偶 的站点配置：玩偶走 wogg 模板，木偶用 SITES 里的 webshare。"""
+    cfg = next((x for x in SITES if _dump(x.get("id")) == sid), None)
+    if not cfg and sid == "玩偶":
+        cfg = {"id": "玩偶", "name": "玩偶", "type": "wogg",
+               "site": ["https://www.wogg.net"]}
+    if not cfg:
+        _u0 = _dump(globals().get("_ND_URL_HINT", ""))
+        if _u0:
+            cfg = {"id": sid, "name": sid, "type": "wogg", "site": [_u0]}
+        else:
+            return None
+    c = dict(cfg)
+    c["session"] = make_session()
+    c["url"] = (c.get("site") or [""])[0]
+    return c
+
+
+def _nd_site_search(key, sid, limit=3):
+    """直接向 玩偶/木偶 站点搜索，不依赖聚合客户端；返回可点开的独立条目。"""
+    try:
+        k = sid + ":" + key
+        hit = _ND_SEARCH_TTL.get(k)
+        if hit and time.time() - hit[0] < 900:
+            return hit[1]
+        c = _nd_site_cfg(sid)
+        if not c or not c.get("url"):
+            return []
+        try:
+            c["session"].get(c["url"] + "/", timeout=5)
+        except Exception:
+            pass
+        if sid == "玩偶":
+            vods = _wogg_plain_search(key) or maccms_search(c, key, "1")
+        else:
+            vods = maccms_search(c, key, "1")
+        out = []
+        for v in (vods or []):
+            nm = _dump(v.get("vod_name"))
+            rid = _dump(v.get("vod_id"))
+            if not nm or not rid:
+                continue
+            out.append({"vod_id": sid + "@" + rid, "vod_name": nm,
+                        "vod_pic": _dump(v.get("vod_pic")),
+                        "vod_remarks": (sid + " · " + _dump(v.get("vod_remarks"))).strip(" ·")})
+            if len(out) >= limit:
+                break
+        _ND_SEARCH_TTL[k] = (time.time(), out)
+        return out
+    except Exception:
+        return []
+
+
+def _nd_site_detail(vid):
+    """点开 玩偶/木偶 搜索结果：解析详情页网盘分享并展开选集。"""
+    try:
+        sid, rid = _dump(vid).split("@", 1)
+        c = _nd_site_cfg(sid)
+        if not c:
+            return None
+        try:
+            c["session"].get(c["url"] + "/", timeout=5)
+        except Exception:
+            pass
+        if sid == "玩偶":
+            pans, html, _st = _wogg_plain_pans(c, rid)
+        else:
+            pans, html = maccms_detail_pans(c, rid)
+        title = ""
+        for rx in (r'<h1[^>]*>([^<]+)</h1>', r'og:title" content="《?([^》"]+)',
+                   r'<title>([^<]+)</title>'):
+            mm = re.search(rx, html or "")
+            if mm:
+                title = re.sub(r"[-_|].*$", "", mm.group(1)).strip()
+                if title:
+                    break
+        title = title or rid.rstrip("/").split("/")[-1]
+        pm = re.search(r'og:image" content="([^"]+)"', html or "")
+        pic = pm.group(1) if pm else ""
+        fs, us = [], []
+        exp = _wogg_pan_eps(pans, _nd_key(title) or title)
+        for pan, uu in exp.items():
+            lab = "网盘·%s·%s·%d集" % (sid, _nd_pan(pan), uu.count("#") + 1)
+            label, u2 = _nd_norm_line(lab, uu)
+            if label in fs:
+                continue
+            fs.append(label)
+            us.append(u2)
+        if not fs:
+            for pan, links in (pans or {}).items():
+                if not links:
+                    continue
+                lab = "网盘·%s·%s" % (sid, _nd_pan(pan))
+                tok = links[0] if str(links[0]).startswith(("agg:", "Q~", "BD~")) else ("agg:直连|" + links[0])
+                label, u2 = _nd_norm_line(lab, "1$" + tok)
+                fs.append(label)
+                us.append(u2)
+        return {"vod_id": _dump(vid), "vod_name": title, "vod_pic": pic,
+                "type_name": "剧集", "vod_year": "", "vod_area": "",
+                "vod_remarks": sid, "vod_content": "",
+                "vod_play_from": "$$$".join(fs), "vod_play_url": "$$$".join(us)}
+    except Exception:
+        return None
+
+
+_MUOU_LINE_CACHE = {}
+_MUOU_WARMING = set()
+
+
+def _muou_line_for(name, budget=10.0):
+    """搜木偶站 → 解析详情 → 取百度(优先)/夸克那一整串选集令牌。
+    结果缓存 30 分钟，搜索时预热，详情页直接命中，避免「第一次进没有、第二次才有」。"""
+    key = _nd_key(name) or _dump(name)
+    if not key:
+        return None
+    hit = _MUOU_LINE_CACHE.get(key)
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    import threading as _th
+    _box = {}
+    def _work():
+        try:
+            rows = _nd_site_search(key, "木偶", 2) or []
+            for r in rows:
+                d = _nd_site_detail(_dump(r.get("vod_id")))
+                if not d:
+                    continue
+                _df = [x for x in _dump(d.get("vod_play_from")).split("$$$") if x]
+                _du = [x for x in _dump(d.get("vod_play_url")).split("$$$") if x]
+                _bd = _qk = None
+                for f, u in zip(_df, _du):
+                    _fl = _dump(f)
+                    if not u:
+                        continue
+                    if "百度" in _fl:
+                        _bd = (_fl, u)
+                    elif "夸克" in _fl:
+                        _qk = (_fl, u)
+                _pick = _bd or _qk      # 优选百度，没有百度才退回夸克
+                if _pick:
+                    _box["line"] = _pick
+                    return
+        except Exception:
+            pass
+    _t = _th.Thread(target=_work, daemon=True)
+    _t.start()
+    _t.join(max(1.0, budget))
+    _ln = _box.get("line")
+    if _ln:
+        _MUOU_LINE_CACHE[key] = (time.time(), _ln)
+    return _ln
+
+
+def _warm_muou(name):
+    """搜索结果里后台预热木偶线，用户点进详情时已经缓存好了。"""
+    try:
+        key = _nd_key(name) or _dump(name)
+        if not key or key in _MUOU_WARMING:
+            return
+        hit = _MUOU_LINE_CACHE.get(key)
+        if hit and time.time() - hit[0] < 1800:
+            return
+        _MUOU_WARMING.add(key)
+        import threading as _th
+        def _run():
+            try:
+                _muou_line_for(key, 12.0)
+            finally:
+                _MUOU_WARMING.discard(key)
+        _th.Thread(target=_run, daemon=True).start()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# 盘基地（guangsuys.top）：详情只补「百度」一条线
+# ---------------------------------------------------------------------------
+_PJ_HOST = "https://guangsuys.top"
+_PJ_SEARCH_CACHE = {}
+_PJ_LINE_CACHE = {}
+_PJ_HDRS = {"User-Agent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36",
+            "Referer": "https://guangsuys.top/"}
+
+
+def _local_bd_cookie():
+    """读本地包配置中心落的百度 Cookie（和夸克同一套位置，文件名 baidu_cookie.txt）"""
+    cands = []
+    for base in (os.getcwd(), os.path.dirname(os.getcwd())):
+        for _n in ("baidu_cookie.txt", "bd_cookie.txt", "pan_baidu.txt"):
+            for sub in (_n, "files/" + _n, "lzxw/" + _n, "files/lzxw/" + _n):
+                cands.append(os.path.join(base, sub))
+    cands += ["/sdcard/baidu_cookie.txt", "/storage/emulated/0/baidu_cookie.txt",
+              "/sdcard/Download/baidu_cookie.txt"]
+    for _pkg in ("com.github.catvod.spider", "com.fongmi.android.tv",
+                 "com.fongmi.android.tv.debug", "com.catvod", "com.tvbox"):
+        for _root in ("/data/user/0", "/data/data"):
+            for _n in ("baidu_cookie.txt", "bd_cookie.txt"):
+                cands.append(_root + "/" + _pkg + "/files/lzxw/" + _n)
+                cands.append(_root + "/" + _pkg + "/files/" + _n)
+    try:
+        cands += glob.glob("/sdcard/Android/data/*/files/lzxw/*baidu*")
+        cands += glob.glob("/storage/emulated/0/Android/data/*/files/lzxw/*baidu*")
+    except Exception:
+        pass
+    for _p in cands:
+        try:
+            if not _p or not os.path.isfile(_p):
+                continue
+            _t = open(_p, "r", encoding="utf-8", errors="ignore").read().strip().strip('"').strip("'")
+            if "BDUSS" in _t or "=" in _t:
+                _t = re.sub(r"\r?\n", "; ", _t)
+                _t = re.sub(r"\s*;\s*", "; ", _t).strip(" ;")
+                if len(_t) >= 20:
+                    return _t
+        except Exception:
+            continue
+    return ""
+
+
+def _pj_search(kw):
+    """盘基地搜索：SSE 流，每行 data: {title,url,is_type}；缓存 10 分钟"""
+    if not kw:
+        return []
+    hit = _PJ_SEARCH_CACHE.get(kw)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    items = []
+    try:
+        r = requests.get(_PJ_HOST + "/api/other/web_search?title=" + quote(kw),
+                         headers=_PJ_HDRS, timeout=20)
+        for _ln in (_dump(getattr(r, "text", "")) or "").split("\n"):
+            _s = _ln[5:].strip() if _ln.startswith("data:") else ""
+            if not _s.startswith("{"):
+                continue
+            try:
+                _o = json.loads(_s)
+            except Exception:
+                continue
+            if _o.get("title") and _o.get("url") and _o.get("is_type"):
+                items.append(_o)
+    except Exception:
+        pass
+    _PJ_SEARCH_CACHE[kw] = (time.time(), items)
+    return items
+
+
+def _pj_decrypt(enc, title=""):
+    """把盘基地的加密串换成真实分享链"""
+    try:
+        r = requests.post(_PJ_HOST + "/api/other/save_url",
+                          json={"url": quote(_dump(enc)), "title": _dump(title)},
+                          headers=_PJ_HDRS, timeout=15)
+        return _dump(((r.json() or {}).get("data") or {}).get("url"))
+    except Exception:
+        return ""
+
+
+def _panjidi_baidu_line(name, budget=8.0):
+    """搜盘基地 → 只取百度分享 → 列文件出选集令牌（BD~ 由 _bd_play_bridge 播）"""
+    key = _nd_key(name) or _dump(name)
+    if not key:
+        return None
+    hit = _PJ_LINE_CACHE.get(key)
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    import threading as _th
+    _box = {}
+
+    def _norm(s):
+        return re.sub(r"[\s·:：!！?？《》\[\]【】()（）]", "", _dump(s))
+
+    def _work():
+        try:
+            _items = _pj_search(key)
+            if not _items:
+                return
+            _nk = _norm(key)
+            _cand = [i for i in _items if i.get("is_type") == "baidu"]
+            # 片名对得上的排前面
+            _cand.sort(key=lambda i: 0 if _norm(i.get("title")) == _nk else
+                       (1 if _nk in _norm(i.get("title")) or _norm(i.get("title")) in _nk else 2))
+            for _it in _cand[:3]:
+                _share = _pj_decrypt(_it.get("url"), _it.get("title"))
+                if not _share or "pan.baidu.com" not in _share:
+                    continue
+                try:
+                    _fs = BaiduDrive(_local_bd_cookie() or BD_COOKIE).walk(_share, limit=500)
+                except Exception:
+                    _fs = []
+                if not _fs:
+                    continue
+                _eps = []
+                for _i, _f in enumerate(_fs):
+                    _tok = json.dumps({"u": _share, "p": _f.get("path", ""),
+                                       "f": _f.get("fs_id", "")}, ensure_ascii=False)
+                    _eps.append("第%02d集$BD~%s" % (_i + 1, quote(_tok, safe="")))
+                _box["line"] = ("盘基地·百度", "#".join(_eps))
+                return
+        except Exception:
+            pass
+
+    _t = _th.Thread(target=_work, daemon=True)
+    _t.start()
+    _t.join(max(1.0, budget))
+    _ln = _box.get("line")
+    if _ln:
+        _PJ_LINE_CACHE[key] = (time.time(), _ln)
+    return _ln
+
+
+def _add_panjidi_baidu(v, budget=8.0):
+    """详情里补一条「盘基地·百度」，只补百度，别的盘一律不上"""
+    try:
+        _fs = [x for x in _dump(v.get("vod_play_from")).split("$$$") if x]
+        if any("盘基地" in _dump(f) and "百度" in _dump(f) for f in _fs):
+            return v
+        _name = _nd_key(_dump(v.get("vod_name"))) or _dump(v.get("vod_name"))
+        if not _name:
+            return v
+        _ln = _panjidi_baidu_line(_name, budget)
+        if _ln:
+            _fs.append(_ln[0])
+            _us = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
+            _us.append(_ln[1])
+            v["vod_play_from"] = "$$$".join(_fs)
+            v["vod_play_url"] = "$$$".join(_us)
+    except Exception:
+        pass
+    return v
+
+
+def _add_muou_quark_line(v, budget=10.0):
+    try:
+        _fs = [x for x in _dump(v.get("vod_play_from")).split("$$$") if x]
+        if any("木偶" in _dump(f) and ("百度" in _dump(f) or "夸克" in _dump(f)) for f in _fs):
+            return v
+        _name = _nd_key(_dump(v.get("vod_name"))) or _dump(v.get("vod_name"))
+        if not _name:
+            return v
+        _ln = _muou_line_for(_name, budget)
+        if _ln:
+            _fs.append(_ln[0])
+            _us = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
+            _us.append(_ln[1])
+            v["vod_play_from"] = "$$$".join(_fs)
+            v["vod_play_url"] = "$$$".join(_us)
+    except Exception:
+        pass
+    return v
+
+
 def _sw(key, default=1):
     """远程开关：switch.json 里 0 就关、1 就开；拉不到用 default"""
     try:
@@ -15658,7 +16110,7 @@ def _bd_play_bridge(info):
     last = {}
     for i in range(2):
         try:
-            r = BaiduDrive(BD_COOKIE).play_share(
+            r = BaiduDrive(_local_bd_cookie() or BD_COOKIE).play_share(
                 _dump(info.get("u")), _dump(info.get("p")), _dump(info.get("f")))
         except Exception as e:
             r = {"parse": 0, "url": "", "msg": "百度播放失败：%s" % e}
@@ -24268,6 +24720,15 @@ class _AggSpider(BaseSpider):
         return []
 
     def searchContent(self, key, quick, pg="1"):
+        # 独立网盘站模式：JSON 里把本站设成「玩偶」「木偶」「剧透」时，
+        # 只返回该站自己的搜索结果，左侧就会出现独立的站名标签
+        _nd = getattr(self, "nd_site", "")
+        if _nd:
+            try:
+                return {"list": _nd_site_search(key, _nd, 12), "page": 1,
+                        "pagecount": 1, "limit": 90, "total": 999999}
+            except Exception:
+                return {"list": []}
         if self.pan_only:
             # UC专站搜索：全部站点都搜，候选统一过 UC 强检测（检测本身不变），结果不去重。
             # 先并行只取候选，再共享线程池限时验播：慢站不再把整轮拖满还被整体丢弃
@@ -27298,6 +27759,8 @@ def _install_quark_stripper():
 
         def _wrap(self, ids, _o=_orig):
             _r = _o(self, ids)
+            _is_nd = any(_dump(x).split("@", 1)[0] in ("玩偶", "木偶", "剧透", "快映")
+                         for x in (ids or []))
             try:
                 for _v in (_r.get("list") or []):
                     _strip_quark_lines(_v)
@@ -27785,17 +28248,51 @@ def _install_pan_replacer():
 
         def _wrap(self, ids, _o=_orig):
             _r = _o(self, ids)
+            _is_nd = any(_dump(x).split("@", 1)[0] in ("玩偶", "木偶", "剧透", "快映")
+                         for x in (ids or []))
             try:
                 for _v in (_r.get("list") or []):
-                    # 网盘聚合彻底停用（它一条线要拉引擎+查详情，详情页必卡）；
-                    # 只补木偶夸克线，3 秒预算，超时直接放行
-                    _panso_quark_lines(_v)
+                    # 用户选择：彻底不加网盘线，只保留官方 4K/云帧享等直连线路，
+                    # 详情页不做任何网盘补线，保证秒开
+                    pass
+                    # 用户选择「界面干净」：详情面板里所有网盘线路（快映/木偶/玩偶/剧透）
+                    # 一律剔除，只留官方 4K/1080P/云帧享这些直连线路
+                    if _is_nd:
+                        continue
+                    # 先补一条木偶线（缓存命中时是瞬间的），再补盘基地·百度（只要百度）
+                    _add_muou_quark_line(_v, 5.0)
+                    _add_panjidi_baidu(_v, 6.0)
                     _fs = [x for x in _dump(_v.get("vod_play_from")).split("$$$") if x]
                     _us = [x for x in _dump(_v.get("vod_play_url")).split("$$$") if x]
-                    if len(_fs) == len(_us) and any("木偶" in _dump(f) for f in _fs):
-                        _k = [(f, u) for f, u in zip(_fs, _us) if "木偶" not in _dump(f)]
-                        _v["vod_play_from"] = "$$$".join(f for f, _ in _k)
-                        _v["vod_play_url"] = "$$$".join(u for _, u in _k)
+                    _keep = []
+                    for f, u in zip(_fs, _us):
+                        _fl = _dump(f)
+                        if "盘基地" in _fl and "百度" in _fl:
+                            _keep.append((f, u))     # 盘基地只留百度这一条
+                            continue
+                        if "网盘" in _fl:
+                            if "木偶" in _fl and "百度" in _fl:
+                                _keep.append((f, u))     # 只留木偶百度这一条
+                            elif "木偶" in _fl and "夸克" in _fl and not any("百度" in _dump(x) for x, _ in _keep):
+                                pass
+                            continue
+                        # 只留直连的 4K/蓝光/云 线路；爱奇艺、芒果、优酷、腾讯这些解析线
+                        # 起播慢、容易缓冲，按用户要求全部去掉
+                        if any(k in _fl for k in ("4K", "蓝光", "高码", "云帧享", "云")):
+                            _keep.append((f, u))
+                    # 排序：三大云/高码云/河豚这类直连排前面，腾讯·4K 等解析线放后面
+                    _pri = {"移动云": 0, "天翼云": 1, "联通云": 2, "高码云": 3,
+                            "河豚": 4, "天堂": 5, "橘汁": 6, "云帧享": 7, "腾讯": 9}
+                    def _rk(_t):
+                        _n = _dump(_t[0])
+                        for _k, _v in _pri.items():
+                            if _k in _n:
+                                return _v
+                        return 8
+                    _keep.sort(key=_rk)
+                    if _keep and len(_keep) != len(_fs):
+                        _v["vod_play_from"] = "$$$".join(f for f, _ in _keep)
+                        _v["vod_play_url"] = "$$$".join(u for _, u in _keep)
             except Exception:
                 pass
             return _r

@@ -20,20 +20,6 @@
       }
     },
     {
-      "key": "panjidi",
-      "name": "🧭盘基地｜网盘",
-      "type": 3,
-      "api": "https://gcore.jsdelivr.net/gh/gaijinxiang/wmz-five-src@main/src/panjidi.py",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 0,
-      "ext": {
-        "quark_cookie": "",
-        "uc_cookie": "",
-        "max_files": 60
-      }
-    },
-    {
       "key": "橘汁",
       "name": "🍊橘汁丨4K",
       "type": 3,
