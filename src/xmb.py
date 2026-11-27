@@ -30902,6 +30902,91 @@ def _max_eps(detail):
         return 0
 
 
+# ---------------- 双星（双芯 / star2.cn）--------------------------------
+_SX_HOSTS = ('https://1.star2.cn', 'https://2.star2.cn', 'https://star2.cn')
+_SX_CACHE = {}
+_SX_UA = ('Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36')
+
+
+def _sx_get(url, budget=4.0):
+    import requests as _rq
+    try:
+        r = _rq.get(url, headers={'User-Agent': _SX_UA, 'Referer': url.split('/search')[0]},
+                    timeout=max(1.5, budget))
+        if r.status_code == 200 and len(r.content) > 200:
+            return r.text or ''
+    except Exception:
+        pass
+    return ''
+
+
+def _sx_pan_links(txt):
+    """从任意 HTML 里抠百度分享链接"""
+    if not txt:
+        return []
+    out = []
+    for u in re.findall(r'https?://pan\.baidu\.com/s/[A-Za-z0-9_\-]{5,}', txt):
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def _sx_baidu_shares(name, budget=6.0):
+    """双星站内搜片名 → 抓百度分享。返回 [(标签, 链接)]"""
+    key = _bd_norm(name)
+    if not key:
+        return []
+    hit = _SX_CACHE.get(key)
+    if hit and time.time() - hit[0] < 900:
+        return hit[1]
+    box = {}
+
+    def _work():
+        res = []
+        dl = time.time() + budget
+        for host in _SX_HOSTS:
+            if time.time() > dl:
+                break
+            for path in ('/search/?keyword=%s&page=1', '/search.php?keyword=%s', '/?s=%s'):
+                if time.time() > dl:
+                    break
+                try:
+                    q = path % urllib.parse.quote(name)
+                except Exception:
+                    continue
+                txt = _sx_get(host + q, dl - time.time())
+                links = _sx_pan_links(txt)
+                if links:
+                    for u in links[:6]:
+                        res.append(('网盘·双星·百度网盘', u))
+                    box['v'] = res
+                    return
+                # 搜到了帖子标题，再进详情页抠链接
+                if 'star2' in txt and name[:4] in txt:
+                    for href in re.findall(r'href="([^"]{4,120})"', txt):
+                        if time.time() > dl:
+                            break
+                        if not any(k in href for k in ('/archives/', '/post/', '/p/', '/thread')):
+                            continue
+                        full = urllib.parse.urljoin(host, href)
+                        body = _sx_get(full, min(4.0, dl - time.time()))
+                        for u in _sx_pan_links(body)[:3]:
+                            res.append(('网盘·双星·百度网盘', u))
+                        if res:
+                            box['v'] = res
+                            return
+        box['v'] = res
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(max(2.0, budget))
+    v = box.get('v') or []
+    if v:
+        _SX_CACHE[key] = (time.time(), v)
+    return v
+
+
 def _bd_auto_eps(name, budget=12.0):
     """盘基地给的一堆百度分享里挑能打开的：先让百度返回分享页头(uk/shareid)，
     拿得到才列目录，列得出集数才用；全程有预算，超时就放弃不拖详情。"""
@@ -31316,6 +31401,11 @@ class Spider(XMFCore):
                         return
                     for _tag, _f, _u in _nd_baidu_shares(_nm_bd, 5.0)[:5]:
                         _q_.put(('网盘·%s·百度网盘' % _tag, _u))
+                    try:
+                        for _sl, _su in _sx_baidu_shares(_nm_bd, 6.0)[:6]:
+                            _q_.put((_sl, _su))
+                    except Exception:
+                        pass
                     for _t, _u in _pansou_baidu(_nm_bd, 5.0)[:8]:
                         _q_.put(('网盘·百度网盘', _u))
                 except Exception:
