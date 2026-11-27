@@ -8,7 +8,7 @@
       "key": "five_min",
       "name": "五大平台",
       "type": 3,
-      "api": "https://gcore.jsdelivr.net/gh/gaijinxiang/wmz-five-src@main/src/five_slim21.py",
+      "api": "https://gcore.jsdelivr.net/gh/gaijinxiang/wmz-five-src@main/src/five_slim22.py",
       "searchable": 1,
       "quickSearch": 1,
       "filterable": 0,
