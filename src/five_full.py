@@ -29511,118 +29511,70 @@ def _install_pan_replacer():
                         # 网盘线只留百度：夸克/UC/腾讯/快映那些一律不上屏
                         return "百度" in _fl
 
-                    # 其它线路分两类，各留 1 条：① 云/4K 直连最优 ② 官方蓝光/官方线
-                    _cloud_k = ("移动云", "天翼云", "联通云", "高码云", "河豚",
-                                "天堂", "橘汁", "云帧享")
-
+                    # ===== 线路面板重做：固定 5 条以内，顺序固定，名字不改 =====
                     _plat_k = ("芒果", "腾讯", "爱奇艺", "优酷", "B站", "哔哩", "搜狐", "乐视")
 
-                    def _is_plat(_fl):
-                        return any(k in _fl for k in _plat_k)
+                    def _nm(_t):
+                        return _dump(_t[0])
 
-                    def _is_cloud(_fl):
-                        if _is_plat(_fl):
-                            return False
-                        return any(k in _fl for k in _cloud_k) or ("4K" in _fl)
+                    def _eps(_u):
+                        return len([z for z in _dump(_u).split("#") if z])
 
-                    def _is_official(_fl):
-                        if _is_plat(_fl):
-                            return True
-                        return ("蓝光" in _fl) or ("官方" in _fl)
-
-                    _clouds = [(f, u) for f, u in zip(_fs, _us)
-                               if not _is_pan(_dump(f)) and _is_cloud(_dump(f))]
-                    _offs = [(f, u) for f, u in zip(_fs, _us)
-                             if not _is_pan(_dump(f)) and not _is_cloud(_dump(f)) and _is_official(_dump(f))]
-                    # 云线必须是「直连媒体」才算：4K 名字挂在解析页/令牌上的（影探·腾讯·4K、
-                    # 小蜜蜂那种）点了还要二次解析，选它当最优就是点开黑屏
-                    def _is_direct(_u):
-                        _first = _dump(_u).split("#")[0]
-                        _v0 = _first.split("$")[-1]
+                    def _direct(_u):
+                        _v0 = _dump(_u).split("#")[0].split("$")[-1]
                         return bool(re.search(r"\.(?:m3u8|mp4|flv|mkv|ts)(?:[?#]|$)", _v0, re.I))
-                    _clouds = [x for x in _clouds if _is_direct(x[1])]
-                    # 集数太少的云线不要：不少「移动云·快」只回 1 集，选它就是点开只有一集，
-                    # 要求至少达到全片最多集数的一半才有资格当最优云线
-                    _maxn = 0
-                    for _f0, _u0 in zip(_fs, _us):
-                        if not _is_pan(_dump(_f0)):
-                            _maxn = max(_maxn, len([z for z in _dump(_u0).split("#") if z]))
-                    if _maxn >= 2:
-                        _clouds = [x for x in _clouds
-                                   if len([z for z in _dump(x[1]).split("#") if z]) >= max(1, _maxn // 2)]
-                    _best_c = min(_clouds, key=_rk) if _clouds else None
 
-                    def _off_rank(_t):
-                        _n = _dump(_t[0])
-                        if "4K" in _n or "4k" in _n:
-                            return 0
-                        if "蓝光" in _n:
-                            return 1
-                        if "1080" in _n:
-                            return 2
-                        if "720" in _n:
-                            return 4
-                        return 3
+                    _items = list(zip(_fs, _us))
+                    # 小山·4K 缺了就现取（缓存 30 分钟，二次打开不花时间）
+                    if not any("小山" in _dump(f) for f, _ in _items):
+                        try:
+                            for _lab, _uu in _xs_episodes(_dump(_v.get("vod_name"))):
+                                _items.append((_lab, _uu))
+                        except Exception:
+                            pass
+                    _maxn = max([_eps(u) for f, u in _items
+                                 if "百度" not in _dump(f)] or [0])
+                    _minn = max(2, _maxn // 2)
+                    _cl = [i for i in _items
+                           if "百度" not in _nm(i) and "小山" not in _nm(i)
+                           and not any(k in _nm(i) for k in _plat_k)
+                           and _direct(i[1]) and _eps(i[1]) >= _minn]
+                    _cl.sort(key=lambda t: (0 if "4K" in _nm(t) else 1, _rk(t)))
+                    _xs1 = [i for i in _items if "小山" in _nm(i) and "4K" in _nm(i)]
+                    _mg = [i for i in _items if "芒果" in _nm(i)]
+                    _tx = [i for i in _items if "腾讯" in _nm(i)]
+                    _mg.sort(key=lambda t: (0 if "4K" in _nm(t) else 1))
+                    _tx.sort(key=lambda t: (0 if "4K" in _nm(t) else 1))
+                    _bd = [i for i in _items if "百度" in _nm(i)]
+                    _sel = []
 
-                    _offs.sort(key=_off_rank)
-                    # 官方线：官方 4K（芒果/腾讯/爱奇艺/优酷）最多留 2 条，没有 4K 才退回蓝光/1080 一条
-                    _off_keep = [x for x in _offs if ("4K" in _dump(x[0]) or "4k" in _dump(x[0]))][:2]
-                    if not _off_keep and _offs:
-                        _off_keep = [min(_offs, key=_off_rank)]
-                    # 腾讯视频官方线必须有一条（优先 4K）
-                    _tx = [x for x in _offs if "腾讯" in _dump(x[0])]
-                    if _tx and not any("腾讯" in _dump(x[0]) for x in _off_keep):
-                        _off_keep.append(min(_tx, key=_off_rank))
-                    # 芒果TV 的线路能用，单独保一条（没有 4K 时它就是主力）
-                    _mg = [x for x in _offs if "芒果" in _dump(x[0])]
-                    if _mg and not any("芒果" in _dump(x[0]) for x in _off_keep):
-                        _off_keep.append(_mg[0])
-                    # 小山·4K 顶替腾讯 4K，必须上屏（最多留 2 条：4K / 蓝光4K）
-                    _xs_keep = [x for x in zip(_fs, _us) if "小山" in _dump(x[0])][:2]
-                    _keep = []
-                    for f, u in zip(_fs, _us):
-                        _fl = _dump(f)
-                        if _xs_keep and (f, u) == _xs_keep[0]:
-                            _keep.append((f, u))
-                        elif _is_pan(_fl):
-                            _keep.append((f, u))
-                        elif (f, u) in _clouds:
-                            _keep.append((f, u))   # 云/4K 直连线全留，不再「优选一条」
-                        elif any((f, u) == x for x in _off_keep):
-                            _keep.append((f, u))   # 官方 4K / 蓝光
-                        elif any((f, u) == x for x in _xs_keep):
-                            _keep.append((f, u))   # 小山 4K / 蓝光4K
-                    # 网盘（百度）必须上屏：以前按「集数要和官方相等」整条丢弃，
-                    # 结果官方 24 集、网盘 23 集时网盘直接消失，用户看不到可选项。
-                    # 现在不砍，集数少就让用户自己看；只留 1 条百度线，别重复刷屏。
-                    # 小山·4K 必须在面板上：不同详情入口不一定都走到 _add_official_4k，
-                    # 这里再兜一次，缺了就补（缓存 30 分钟，重复打开不再多等）
-                    try:
-                        if not any("小山" in _dump(f) for f, _ in _keep):
-                            for _lab, _u in _xs_episodes(_dump(_v.get("vod_name"))):
-                                _keep.append((_lab, _u))
-                    except Exception:
-                        pass
-                    # 网盘线只留 1 条（快映/木偶/玩偶都带百度，留一条就够）
-                    _pan_n = 0
-                    _k2 = []
-                    for _ff, _uu in _keep:
-                        if _is_pan(_dump(_ff)):
-                            _pan_n += 1
-                            if _pan_n > 1:
-                                continue
-                        _k2.append((_ff, _uu))
-                    _keep = _k2
-                    # 兜底：过滤后只剩 1 条（或一条不剩）说明规则把可选线路掐光了，
-                    # 这时退回原始列表前 4 条（保持源站原名），至少让用户有得选
-                    if len(_keep) < 2 and len(_fs) > len(_keep):
-                        _keep = list(zip(_fs, _us))[:4]
-                    # 只有「云/4K」这类直连线路才改名成精选；腾讯/芒果等官方平台线
-                    # 保留原名，免得「腾讯·4K」被改名吞掉、面板上一条腾讯都没了
-                    _PLAT = ("腾讯", "芒果", "爱奇艺", "优酷", "B站", "哔哩", "搜狐", "乐视", "小山")
-                    # 精选/速度标注整段已下线：改名会让播放器认不出线路、也会把面板
-                    # 压成一条，用户点开就是黑屏。线路名一律保持源站原名。
-                    _pick = None
+                    def _add(_x):
+                        if not _x:
+                            return
+                        if any(_nm(_x) == _nm(_y) or _dump(_x[1]) == _dump(_y[1])
+                               for _y in _sel):
+                            return
+                        _sel.append(_x)
+
+                    if _cl:
+                        _add(_cl[0])          # ① 云/4K（集数够、直连）
+                    if _xs1:
+                        _add(_xs1[0])         # ② 小山·4K
+                    if _mg:
+                        _add(_mg[0])          # ③ 芒果
+                    if _tx:
+                        _add(_tx[0])          # ④ 腾讯
+                    if _bd:
+                        _add(_bd[0])          # ⑤ 百度网盘
+                    if len(_sel) < 2:
+                        for _x in _items:
+                            if "百度" not in _nm(_x) and _eps(_x[1]) >= _minn:
+                                _add(_x)
+                                if len(_sel) >= 2:
+                                    break
+                    if len(_sel) < 2 and _items:
+                        _sel = _items[:3]
+                    _keep = _sel[:5]
                     if _keep:
                         _v["vod_play_from"] = "$$$".join(f for f, _ in _keep)
                         _v["vod_play_url"] = "$$$".join(u for _, u in _keep)
