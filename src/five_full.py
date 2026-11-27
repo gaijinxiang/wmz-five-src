@@ -12443,7 +12443,7 @@ def _nd_pan_lines(name, sid, budget=8.0, maxn=4):
                     _fl = _dump(f)
                     if not u:
                         continue
-                    if any(k in _fl for k in ("百度", "夸克", "UC", "uc", "腾讯")):
+                    if "百度" in _fl:
                         _out.append((_fl, u))
                 if _out:
                     _box["lines"] = _out[:maxn]
@@ -28409,7 +28409,8 @@ def _install_pan_replacer():
                         return 8
 
                     def _is_pan(_fl):
-                        return ("网盘" in _fl) or ("夸克" in _fl) or ("玩偶" in _fl) or ("木偶" in _fl)
+                        # 网盘线只留百度：夸克/UC/腾讯/快映那些一律不上屏
+                        return "百度" in _fl
 
                     # 其它线路分两类，各留 1 条：① 云/4K 直连最优 ② 官方蓝光/官方线
                     _cloud_k = ("移动云", "天翼云", "联通云", "高码云", "河豚",
