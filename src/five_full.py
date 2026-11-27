@@ -28351,32 +28351,29 @@ def _install_pan_replacer():
                     _add_woyou_line(_v, 6.0)
                     _fs = [x for x in _dump(_v.get("vod_play_from")).split("$$$") if x]
                     _us = [x for x in _dump(_v.get("vod_play_url")).split("$$$") if x]
-                    _keep = []
-                    for f, u in zip(_fs, _us):
-                        _fl = _dump(f)
-                        if "玩偶" in _fl:
-                            _keep.append((f, u))     # 玩偶线保留
-                            continue
-                        if "网盘" in _fl:
-                            if "木偶" in _fl and "百度" in _fl:
-                                _keep.append((f, u))     # 只留木偶百度这一条
-                            elif "木偶" in _fl and "夸克" in _fl and not any("百度" in _dump(x) for x, _ in _keep):
-                                pass
-                            continue
-                        # 只留直连的 4K/蓝光/云 线路；爱奇艺、芒果、优酷、腾讯这些解析线
-                        # 起播慢、容易缓冲，按用户要求全部去掉
-                        if any(k in _fl for k in ("4K", "蓝光", "高码", "云帧享", "云")):
-                            _keep.append((f, u))
-                    # 排序：三大云/高码云/河豚这类直连排前面，腾讯·4K 等解析线放后面
+                    # 规则：网盘线（含夸克/百度）全部显示；其余线路只留 1 条最优
                     _pri = {"移动云": 0, "天翼云": 1, "联通云": 2, "高码云": 3,
                             "河豚": 4, "天堂": 5, "橘汁": 6, "云帧享": 7, "腾讯": 9}
+
                     def _rk(_t):
                         _n = _dump(_t[0])
                         for _k, _v in _pri.items():
                             if _k in _n:
                                 return _v
                         return 8
-                    _keep.sort(key=_rk)
+
+                    def _is_pan(_fl):
+                        return ("网盘" in _fl) or ("夸克" in _fl) or ("玩偶" in _fl) or ("木偶" in _fl)
+
+                    _others = [(f, u) for f, u in zip(_fs, _us) if not _is_pan(_dump(f))]
+                    _best = min(_others, key=_rk) if _others else None
+                    _keep = []
+                    for f, u in zip(_fs, _us):
+                        _fl = _dump(f)
+                        if _is_pan(_fl):
+                            _keep.append((f, u))
+                        elif _best is not None and f == _best[0] and u == _best[1]:
+                            _keep.append((f, u))   # 其它线路只留这一条
                     if _keep and len(_keep) != len(_fs):
                         _v["vod_play_from"] = "$$$".join(f for f, _ in _keep)
                         _v["vod_play_url"] = "$$$".join(u for _, u in _keep)
