@@ -29593,9 +29593,14 @@ def _install_pan_replacer():
                     _pick = next((x for x in _keep
                                   if not _is_pan(_dump(x[0]))
                                   and not any(_k in _dump(x[0]) for _k in _PLAT)), None)
+                    # 只有实测真的能拉出字节的线路才配叫「精选」；测不出来就当没有精选，
+                    # 保留原来的「移动云/联通云/4K」真名，免得改了名又播不了
                     if _pick:
                         _pu = [z.split("$")[-1] for z in _dump(_pick[1]).split("#") if z]
                         _tag = _speed_tag(_pu[0]) if _pu else ""
+                        if not _tag:
+                            _pick = None
+                    if _pick:
                         _q = "4K" if "4K" in _dump(_pick[0]) else "精选"
                         _newname = "五大平台·精选%s%s" % (_q, _tag)
                         _keep = [(_newname if (f, u) == _pick else f, u) for f, u in _keep]
