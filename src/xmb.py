@@ -31189,7 +31189,7 @@ def _bd_play(tok):
 # ======================================================================
 class Spider(XMFCore):
     XF_BUDGET = 7.0          # 稀饭线路最多等这么久，超时只上小蜜蜂自己的线
-    BD_BUDGET = 10.0          # 百度网盘线（快映/木偶）最多等这么久
+    BD_BUDGET = 9.0          # 百度网盘线（快映/木偶）最多等这么久
     XF_SKIP = ('网盘', '快映', '木偶', '玩偶', '剧透')   # 这些线不往小蜜蜂面板里塞
 
     def __init__(self):
@@ -31371,18 +31371,21 @@ class Spider(XMFCore):
                     pass
         return core
 
-    SPEED_BUDGET = 2.6      # 量速总共等这么久（并行，测不出就不加）
+    SPEED_BUDGET = 4.0      # 量速总共等这么久（并行，测不出就不加）
     SPEED_MAX_LINES = 16
 
-    def _speed_mb(self, tok):
-        """取第一条能播的地址，测 0.6 秒实际下载速率（MB/s）"""
+    def _probe_line(self, tok):
+        """取第一集地址实测：返回 (有效?, MB/s)。拿不到流/拉不到数据即判失效。"""
         try:
             r = self.playerContent('', tok, None) or {}
         except Exception:
-            return 0.0
+            return False, 0.0
         u = _dump(r.get('url') or r.get('playUrl'))
         if not u.startswith('http'):
-            return 0.0
+            return False, 0.0
+        if any(k in u for k in ('mgtv.com/b/', 'v.qq.com/x/cover/', 'iqiyi.com/v_',
+                                'youku.com/v_show/', 'bilibili.com/video/')):
+            return False, 0.0    # 还是网页地址，等于没出流
         import requests as _rq
         try:
             if '.m3u8' in u:
@@ -31390,22 +31393,28 @@ class Spider(XMFCore):
                 seg = next((x.strip() for x in (m.text or '').split('\n')
                             if x.strip() and not x.startswith('#')), '')
                 if not seg:
-                    return 0.0
+                    return False, 0.0
                 u = urllib.parse.urljoin(u, seg)
             t0 = time.time()
             got = 0
             resp = _rq.get(u, headers={'User-Agent': 'Mozilla/5.0'}, stream=True, timeout=2.0)
             if resp.status_code not in (200, 206):
-                return 0.0
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+                return False, 0.0
             for c in resp.iter_content(65536):
                 got += len(c)
                 if time.time() - t0 > 0.6 or got >= 786432:
                     break
             resp.close()
+            if got <= 0:
+                return False, 0.0
             dt = max(time.time() - t0, 0.05)
-            return got / 1048576.0 / dt
+            return True, got / 1048576.0 / dt
         except Exception:
-            return 0.0
+            return False, 0.0
 
     def _tag_speed(self, vod, _th):
         ff = [x for x in str(vod.get('vod_play_from') or '').split('$$$') if x]
@@ -31415,7 +31424,7 @@ class Spider(XMFCore):
         box = {}
 
         def one(i, tok):
-            box[i] = self._speed_mb(tok)
+            box[i] = self._probe_line(tok)
 
         ts = []
         for i, (f, u) in enumerate(zip(ff, uu)):
@@ -31432,9 +31441,18 @@ class Spider(XMFCore):
             t.join(max(0.0, dl - time.time()))
         out = []
         for i, f in enumerate(ff):
-            mb = box.get(i) or 0.0
-            if mb >= 0.1 and 'MB/s' not in f:
-                f = '%s·%.1fMB/s' % (f, mb)
+            got = box.get(i)
+            if 'MB/s' in f or '失效' in f or f.endswith('·有效'):
+                out.append(f)
+                continue
+            if got is None:
+                out.append(f)          # 没赶上预算，不硬判
+                continue
+            ok, mb = got
+            if ok:
+                f = '%s·有效·%.1fMB/s' % (f, mb) if mb >= 0.1 else '%s·有效' % f
+            else:
+                f = '%s·失效' % f
             out.append(f)
         vod['vod_play_from'] = '$$$'.join(out)
 
