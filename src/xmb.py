@@ -30888,6 +30888,20 @@ FILTERS_WOGG = {
 
 _BD_SITES = ("http://xsayang.fun", "http://38.76.197.172:12521",
              "https://123.666291.xyz", "https://666.666291.xyz", "https://www.muou.site")
+def _max_eps(detail):
+    """从官方详情里取最大集数"""
+    try:
+        _l = ((detail or {}).get('list') or [])
+        _mx = 0
+        for _v in _l:
+            for _u in str(_v.get('vod_play_url') or '').split('$$$'):
+                _n = len([x for x in _u.split('#') if '$' in x])
+                _mx = max(_mx, _n)
+        return _mx
+    except Exception:
+        return 0
+
+
 def _bd_auto_eps(name, budget=12.0):
     """盘基地给的一堆百度分享里挑能打开的：先让百度返回分享页头(uk/shareid)，
     拿得到才列目录，列得出集数才用；全程有预算，超时就放弃不拖详情。"""
@@ -31189,7 +31203,7 @@ def _bd_play(tok):
 # ======================================================================
 class Spider(XMFCore):
     XF_BUDGET = 7.0          # 稀饭线路最多等这么久，超时只上小蜜蜂自己的线
-    BD_BUDGET = 9.0          # 百度网盘线（快映/木偶）最多等这么久
+    BD_BUDGET = 12.0          # 百度网盘线（快映/木偶）最多等这么久
     XF_SKIP = ('网盘', '快映', '木偶', '玩偶', '剧透')   # 这些线不往小蜜蜂面板里塞
 
     def __init__(self):
@@ -31288,37 +31302,68 @@ class Spider(XMFCore):
                 _box['xf'] = []
 
         def _job_bd():
-            try:
-                _nm2 = _bd_norm((_box.get('name') or ''))
-                _nm_bd = _box.get('name') or ''
-                _cands = []
-                _one_share = _dump(getattr(self, '_ext', {}).get('bd_share'))
-                _lines = []
-                if _one_share:
-                    _e = _bd_eps(_one_share, 10.0)
-                    if _e:
-                        _lines.append(('网盘·百度网盘', _e))
-                else:
-                    for _tag, _f, _u in _nd_baidu_shares(_nm_bd, 8.0)[:2]:
-                        _e = _bd_eps(_u, 10.0)
-                        if _e:
-                            _lines.append(('网盘·%s·百度网盘' % _tag, _e))
-                            break
-                    # 木偶/玩偶 拿不到就用盘搜（不管来源站，只认能打开的百度分享）
-                    if not _lines:
-                        for _t, _u in _pansou_baidu(_nm_bd, 8.0)[:6]:
-                            _e = _bd_eps(_u, 9.0)
-                            if _e:
-                                _lines.append(('网盘·百度网盘%d集' % len(_e.split('#')), _e))
-                                break
-                _box['bd'] = _lines
+            """百度分享：边搜边验，只留集数 ≥ 官方集数的"""
+            import queue as _q
+            _q_ = _q.Queue()
+            _nm_bd = _box.get('name') or ''
+            _N = int(_box.get('epn') or 0)
+            _one_share = _dump(getattr(self, '_ext', {}).get('bd_share'))
+
+            def _feed():
                 try:
-                    if _lines:
-                        _BD_LINE_CACHE[_bd_norm(_nm_bd)] = (time.time(), _lines)
+                    if _one_share:
+                        _q_.put(('网盘·百度网盘', _one_share))
+                        return
+                    for _tag, _f, _u in _nd_baidu_shares(_nm_bd, 5.0)[:5]:
+                        _q_.put(('网盘·%s·百度网盘' % _tag, _u))
+                    for _t, _u in _pansou_baidu(_nm_bd, 5.0)[:8]:
+                        _q_.put(('网盘·百度网盘', _u))
                 except Exception:
                     pass
+
+            _ft = _th.Thread(target=_feed)
+            _ft.daemon = True
+            _ft.start()
+            _best_ok = None
+            _best_any = None
+            _seen = set()
+            _deadline = time.time() + max(6.0, self.BD_BUDGET)
+            while time.time() < _deadline:
+                try:
+                    _lab, _u = _q_.get(timeout=0.8)
+                except Exception:
+                    if not _ft.is_alive():
+                        break
+                    continue
+                if not _u or _u in _seen:
+                    continue
+                _seen.add(_u)
+                _left = _deadline - time.time()
+                if _left < 2.0:
+                    break
+                _e = _bd_eps(_u, min(8.0, _left))
+                if not _e:
+                    continue
+                _c = len(_e.split('#'))
+                if _best_any is None or _c > _best_any[0]:
+                    _best_any = (_c, _lab, _e)
+                if _N and _c >= _N and (_best_ok is None or _c > _best_ok[0]):
+                    _best_ok = (_c, _lab, _e)
+            _pick = _best_ok or _best_any
+            _lines = []
+            if _pick:
+                _c, _lab, _e = _pick
+                if _N and _c < _N:
+                    _lab = _lab + '·%d集(少于官方%d集)' % (_c, _N)
+                else:
+                    _lab = _lab + '·%d集' % _c
+                _lines.append((_lab, _e))
+            _box['bd'] = _lines
+            try:
+                if _lines:
+                    _BD_LINE_CACHE[_bd_norm(_nm_bd)] = (time.time(), _lines)
             except Exception:
-                _box['bd'] = []
+                pass
 
         _t = _th.Thread(target=_job)
         _t.daemon = True
@@ -31332,6 +31377,7 @@ class Spider(XMFCore):
         try:
             _one0 = ((core or {}).get('list') or [None])[0]
             _box['name'] = str((_one0 or {}).get('vod_name') or '')
+            _box['epn'] = _max_eps(core)
             _bd_thread = _th.Thread(target=_job_bd)
             _bd_thread.daemon = True
             _bd_thread.start()
