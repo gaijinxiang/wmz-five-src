@@ -12417,6 +12417,49 @@ _MUOU_LINE_CACHE = {}
 _MUOU_WARMING = set()
 
 
+_ND_PAN_CACHE = {}
+
+
+def _nd_pan_lines(name, sid, budget=8.0, maxn=4):
+    """从 玩偶/木偶 站取整串网盘线路（百度/夸克/UC/腾讯 都算），最多 maxn 条"""
+    key = sid + "|" + (_nd_key(name) or _dump(name))
+    hit = _ND_PAN_CACHE.get(key)
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    import threading as _th
+    _box = {}
+
+    def _work():
+        try:
+            rows = _nd_site_search(_nd_key(name) or _dump(name), sid, 2) or []
+            for r in rows:
+                d = _nd_site_detail(_dump(r.get("vod_id")))
+                if not d:
+                    continue
+                _df = [x for x in _dump(d.get("vod_play_from")).split("$$$") if x]
+                _du = [x for x in _dump(d.get("vod_play_url")).split("$$$") if x]
+                _out = []
+                for f, u in zip(_df, _du):
+                    _fl = _dump(f)
+                    if not u:
+                        continue
+                    if any(k in _fl for k in ("百度", "夸克", "UC", "uc", "腾讯")):
+                        _out.append((_fl, u))
+                if _out:
+                    _box["lines"] = _out[:maxn]
+                    return
+        except Exception:
+            pass
+
+    _t = _th.Thread(target=_work, daemon=True)
+    _t.start()
+    _t.join(max(1.0, budget))
+    _ln = _box.get("lines") or []
+    if _ln:
+        _ND_PAN_CACHE[key] = (time.time(), _ln)
+    return _ln
+
+
 _WOYOU_LINE_CACHE = {}
 
 
@@ -12466,7 +12509,7 @@ def _woyou_line_for(name, budget=8.0):
 
 
 def _add_woyou_line(v, budget=8.0):
-    """详情里补一条玩偶网盘线（百度优先）；名字带「玩偶」便于过滤"""
+    """详情里补玩偶的网盘线（百度/夸克/UC/腾讯 全收）"""
     try:
         _fs = [x for x in _dump(v.get("vod_play_from")).split("$$$") if x]
         if any("玩偶" in _dump(f) for f in _fs):
@@ -12474,11 +12517,12 @@ def _add_woyou_line(v, budget=8.0):
         _name = _nd_key(_dump(v.get("vod_name"))) or _dump(v.get("vod_name"))
         if not _name:
             return v
-        _ln = _woyou_line_for(_name, budget)
-        if _ln:
-            _fs.append("玩偶·" + _dump(_ln[0]).replace("网盘·", ""))
-            _us = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
-            _us.append(_ln[1])
+        _lines = _nd_pan_lines(_name, "玩偶", budget)
+        _us = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
+        for _f, _u in _lines:
+            _fs.append("玩偶·" + _dump(_f).replace("网盘·", ""))
+            _us.append(_u)
+        if _lines:
             v["vod_play_from"] = "$$$".join(_fs)
             v["vod_play_url"] = "$$$".join(_us)
     except Exception:
@@ -12728,18 +12772,20 @@ def _add_panjidi_baidu(v, budget=8.0):
 
 
 def _add_muou_quark_line(v, budget=10.0):
+    """详情里补木偶的网盘线（百度/夸克/UC/腾讯 全收）"""
     try:
         _fs = [x for x in _dump(v.get("vod_play_from")).split("$$$") if x]
-        if any("木偶" in _dump(f) and ("百度" in _dump(f) or "夸克" in _dump(f)) for f in _fs):
+        if any("木偶" in _dump(f) for f in _fs):
             return v
         _name = _nd_key(_dump(v.get("vod_name"))) or _dump(v.get("vod_name"))
         if not _name:
             return v
-        _ln = _muou_line_for(_name, budget)
-        if _ln:
-            _fs.append(_ln[0])
-            _us = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
-            _us.append(_ln[1])
+        _lines = _nd_pan_lines(_name, "木偶", budget)
+        _us = [x for x in _dump(v.get("vod_play_url")).split("$$$") if x]
+        for _f, _u in _lines:
+            _fs.append("木偶·" + _dump(_f).replace("网盘·", ""))
+            _us.append(_u)
+        if _lines:
             v["vod_play_from"] = "$$$".join(_fs)
             v["vod_play_url"] = "$$$".join(_us)
     except Exception:
@@ -28407,6 +28453,10 @@ def _install_pan_replacer():
                     _off_keep = [x for x in _offs if ("4K" in _dump(x[0]) or "4k" in _dump(x[0]))][:2]
                     if not _off_keep and _offs:
                         _off_keep = [min(_offs, key=_off_rank)]
+                    # 芒果TV 的线路能用，单独保一条（没有 4K 时它就是主力）
+                    _mg = [x for x in _offs if "芒果" in _dump(x[0])]
+                    if _mg and not any("芒果" in _dump(x[0]) for x in _off_keep):
+                        _off_keep.append(_mg[0])
                     _keep = []
                     for f, u in zip(_fs, _us):
                         _fl = _dump(f)
