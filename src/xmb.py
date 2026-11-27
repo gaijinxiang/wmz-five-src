@@ -30932,8 +30932,25 @@ def _sx_pan_links(txt):
     return out
 
 
-def _sx_baidu_shares(name, budget=6.0):
-    """双星站内搜片名 → 抓百度分享。返回 [(标签, 链接)]"""
+def _sx_eps(title):
+    """从双星标题里抠集数：【国剧】xxx.更18 / .全208集 / .全集"""
+    try:
+        t = _dump(title)
+        m = re.search(r'[.。\s]更(\d{1,4})', t)
+        if m:
+            return int(m.group(1))
+        m = re.search(r'全(\d{1,4})集', t)
+        if m:
+            return int(m.group(1))
+        if '全集' in t or '完结' in t:
+            return -1          # 标全集，但不知道具体几集
+    except Exception:
+        pass
+    return 0
+
+
+def _sx_baidu_shares(name, budget=7.0):
+    """双星（star2.cn）搜片名 → 进详情页抓百度分享。返回 [(标签, 链接)]"""
     key = _bd_norm(name)
     if not key:
         return []
@@ -30948,44 +30965,42 @@ def _sx_baidu_shares(name, budget=6.0):
         for host in _SX_HOSTS:
             if time.time() > dl:
                 break
-            for path in ('/search/?keyword=%s&page=1', '/search.php?keyword=%s', '/?s=%s'):
-                if time.time() > dl:
+            q = host + '/search/?keyword=' + urllib.parse.quote(name)
+            txt = _sx_get(q, min(5.0, dl - time.time()))
+            if not txt:
+                continue
+            # 详情页地址形如 /rh/8644.html、/dm/1824.html
+            posts = []
+            for m in re.finditer(r'href="([^"]*/[a-z]{1,4}/\d+\.html)"', txt, re.I):
+                u = urllib.parse.urljoin(host, m.group(1))
+                if u not in posts:
+                    posts.append(u)
+            if not posts:
+                for m in re.finditer(r'href="([^"]*/\d{3,}\.html)"', txt, re.I):
+                    u = urllib.parse.urljoin(host, m.group(1))
+                    if u not in posts:
+                        posts.append(u)
+            for u in posts[:6]:
+                left = dl - time.time()
+                if left < 1.5:
                     break
-                try:
-                    q = path % urllib.parse.quote(name)
-                except Exception:
+                body = _sx_get(u, min(4.5, left))
+                if not body:
                     continue
-                txt = _sx_get(host + q, dl - time.time())
-                if not txt:
+                ttl = ''
+                m = re.search(r'<h1[^>]*>(.*?)</h1>', body, re.S)
+                if m:
+                    ttl = re.sub(r'<[^>]+>', '', m.group(1))
+                if name[:3] and name[:3] not in ttl and key[:4] not in ttl:
                     continue
-                for u in _sx_pan_links(txt)[:6]:
-                    res.append(('双星·网盘·百度网盘', u))
+                eps = _sx_eps(ttl)
+                for u2 in _sx_pan_links(body)[:3]:
+                    res.append((('双星·网盘·百度网盘', u2), eps))
+                    break
                 if res:
-                    box['v'] = res
-                    return
-                if name[:3] not in txt:
-                    continue
-                posts = []
-                for h in re.findall(r'href="([^"]{4,140})"', txt):
-                    if h.startswith(('javascript', '#', 'mailto')):
-                        continue
-                    if any(k in h.lower() for k in ('search', 'cate', 'tag', 'login',
-                                                    'about', 'page=', '?s=', 'rss')):
-                        continue
-                    if re.search(r'/\d{3,}', h) or any(k in h for k in ('/archives/', '/post/')):
-                        full = urllib.parse.urljoin(host, h)
-                        if full not in posts:
-                            posts.append(full)
-                for full in posts[:6]:
-                    left = dl - time.time()
-                    if left < 1.5:
-                        break
-                    body = _sx_get(full, min(4.0, left))
-                    for u in _sx_pan_links(body)[:3]:
-                        res.append(('双星·网盘·百度网盘', u))
-                if res:
-                    box['v'] = res
-                    return
+                    break
+            if res:
+                break
         box['v'] = res
 
     t = threading.Thread(target=_work, daemon=True)
@@ -31407,17 +31422,17 @@ class Spider(XMFCore):
             def _feed():
                 try:
                     if _one_share:
-                        _q_.put(('指定·网盘·百度网盘', _one_share))
+                        _q_.put(('指定·网盘·百度网盘', _one_share, 0))
                         return
                     for _tag, _f, _u in _nd_baidu_shares(_nm_bd, 5.0)[:5]:
-                        _q_.put(('%s·网盘·百度网盘' % _tag, _u))
+                        _q_.put(('%s·网盘·百度网盘' % _tag, _u, 0))
                     try:
-                        for _sl, _su in _sx_baidu_shares(_nm_bd, 6.0)[:6]:
-                            _q_.put((_sl, _su))
+                        for (_sl, _su), _se in _sx_baidu_shares(_nm_bd, 7.0)[:6]:
+                            _q_.put((_sl, _su, _se))
                     except Exception:
                         pass
                     for _t, _u in _pansou_baidu(_nm_bd, 5.0)[:8]:
-                        _q_.put(('盘搜·网盘·百度网盘', _u))
+                        _q_.put(('盘搜·网盘·百度网盘', _u, 0))
                 except Exception:
                     pass
 
@@ -31430,7 +31445,9 @@ class Spider(XMFCore):
             _deadline = time.time() + max(6.0, self.BD_BUDGET)
             while time.time() < _deadline:
                 try:
-                    _lab, _u = _q_.get(timeout=0.8)
+                    _item = _q_.get(timeout=0.8)
+                    _lab, _u = _item[0], _item[1]
+                    _eps_hint = _item[2] if len(_item) > 2 else 0
                 except Exception:
                     if not _ft.is_alive():
                         break
