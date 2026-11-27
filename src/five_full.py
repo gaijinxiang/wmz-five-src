@@ -29492,6 +29492,9 @@ def _install_pan_replacer():
                     if _is_nd:
                         continue
                     # 先补一条木偶线（缓存命中时是瞬间的），再补盘基地·百度（只要百度）
+                    # 用户要求：源这边不再加任何线路（木偶/玩偶/小山/网盘都不加），
+                    # 详情原样返回，线路由用户自己加
+                    continue
                     _add_muou_quark_line(_v, 5.0)
                     _add_woyou_line(_v, 6.0)
                     _fs = [x for x in _dump(_v.get("vod_play_from")).split("$$$") if x]
