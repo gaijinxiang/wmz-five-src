@@ -29541,6 +29541,15 @@ def _install_pan_replacer():
                         _v0 = _first.split("$")[-1]
                         return bool(re.search(r"\.(?:m3u8|mp4|flv|mkv|ts)(?:[?#]|$)", _v0, re.I))
                     _clouds = [x for x in _clouds if _is_direct(x[1])]
+                    # 集数太少的云线不要：不少「移动云·快」只回 1 集，选它就是点开只有一集，
+                    # 要求至少达到全片最多集数的一半才有资格当最优云线
+                    _maxn = 0
+                    for _f0, _u0 in zip(_fs, _us):
+                        if not _is_pan(_dump(_f0)):
+                            _maxn = max(_maxn, len([z for z in _dump(_u0).split("#") if z]))
+                    if _maxn >= 2:
+                        _clouds = [x for x in _clouds
+                                   if len([z for z in _dump(x[1]).split("#") if z]) >= max(1, _maxn // 2)]
                     _best_c = min(_clouds, key=_rk) if _clouds else None
 
                     def _off_rank(_t):
