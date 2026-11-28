@@ -32875,21 +32875,26 @@ class Spider(XMFCore):
             # 现解析 + 当场验一次清单（cibn 链接刚出来时是活的，实测连拉 6 次全 200），
             # 验不过就重新解析一次拿新 auth_key，最多 3 次，直链交给播放器。
             got = {}
-            for _i in range(3):
+            for _i in range(2):
                 got = XMFCore.playerContent(self, flag, id, vipFlags) or {}
                 u0 = _dump(got.get('url') or got.get('playUrl'))
                 if not u0.startswith('http'):
                     continue
                 # 每次都用「刚解析出来」的地址抓快照；cibn 链接只在解析后极短时间可读，
                 # 复用旧地址必 402/503（这就是反复转圈的根因）
-                local = _cibn_local(u0) if '_CIBN_CACHE' in globals() else ''
-                if local:
-                    got = dict(got)
-                    got['url'] = local
-                    got['parse'] = 0
-                    got['jx'] = 0
-                    got['header'] = {'User-Agent': 'okhttp/4.12.0'}
-                    return got
+                # 纯直链：cibn 清单到手后约 30 秒内一直可读（实测 +0/3/5/8/12/20 秒全 200），
+                # 交给播放器自己取即可；不再挂 127.0.0.1（该壳取不到本机回环）
+                try:
+                    import requests as _rq
+                    r = _rq.get(u0, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+                    if '#EXTM3U' in (r.text or '')[:400]:
+                        got = dict(got)
+                        got['url'] = u0
+                        got['parse'] = 0
+                        got['jx'] = 0
+                        return got
+                except Exception:
+                    pass
             return got
         if self._xf is not None and s:
             got = self._xf.playerContent(flag, s, vipFlags)
