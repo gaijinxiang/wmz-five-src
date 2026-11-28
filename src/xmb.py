@@ -31747,6 +31747,18 @@ def _cibn_local(url):
                 break
         except Exception:
             body = ''
+    if body:
+        # 片头垫的 ad 段（/ad/…）去掉：1.2MB 的广告放在 cibn 边缘节点上常卡半分钟，
+        # 表现为「一直转圈」，去掉后点开就是正片
+        out = []
+        for ln in body.splitlines():
+            t = ln.strip()
+            if t and not t.startswith('#') and '/ad/' in t:
+                if out and out[-1].startswith('#EXTINF'):
+                    out.pop()
+                continue
+            out.append(ln)
+        body = '\n'.join(out)
     local = _iq_serve(body, url) if body else ''
     _CIBN_CACHE[url] = (time.time() + 60, local)
     while len(_CIBN_CACHE) > 60:
