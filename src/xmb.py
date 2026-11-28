@@ -31936,7 +31936,7 @@ class Spider(XMFCore):
                     if not _tx_play(_e[0][1]):
                         _box['tx'] = []
                         return
-                    _box['tx'] = [('腾讯官方·1080P',
+                    _box['tx'] = [('腾讯官方线路',
                                    '#'.join('%s$txhd:%s' % (lab, page) for lab, page in _e))]
                 except Exception:
                     _box['tx'] = []
@@ -31974,6 +31974,11 @@ class Spider(XMFCore):
                 continue
             ff = [x for x in str(vod.get('vod_play_from') or '').split('$$$') if x]
             uu = [x for x in str(vod.get('vod_play_url') or '').split('$$$') if x]
+            # 站点自带「腾讯官方线路」= 它自己的 flv 云转链，常停在缓冲不动：先摘掉，
+            # 让下面我们那条官方 m3u8 顶着同一个名字上第一
+            _kk = [(f, u) for f, u in zip(ff, uu) if not ('-qq-' in u and '腾讯' in f)]
+            ff = [f for f, _ in _kk]
+            uu = [u for _, u in _kk]
             _cached_bd = _BD_LINE_CACHE.get(_bd_norm(str(vod.get('vod_name') or '')))
             if _cached_bd and time.time() - _cached_bd[0] < 3600:
                 for _lf, _lu2 in _cached_bd[1]:
@@ -31986,8 +31991,11 @@ class Spider(XMFCore):
                     continue
                 ff.append(f)
                 uu.append(u)
-            vod['vod_play_from'] = '$$$'.join(ff)
-            vod['vod_play_url'] = '$$$'.join(uu)
+            # 我们这条腾讯官方 m3u8 排到第一位，点开就能播
+            _mine = [(f, u) for f, u in zip(ff, uu) if 'txhd:' in u]
+            _keep = [(f, u) for f, u in zip(ff, uu) if 'txhd:' not in u]
+            vod['vod_play_from'] = '$$$'.join([f for f, _ in _mine + _keep])
+            vod['vod_play_url'] = '$$$'.join([u for _, u in _mine + _keep])
         for vod in ((core or {}).get('list') or []):
             if isinstance(vod, dict):
                 try:
