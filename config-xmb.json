@@ -12,17 +12,6 @@
       "timeout": 90
     },
     {
-      "key": "xmb_xf_jsd",
-      "name": "🐝小蜜蜂｜稀饭(备用)",
-      "type": 3,
-      "api": "https://cdn.jsdelivr.net/gh/gaijinxiang/wmz-five-src@main/src/xmb.py",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 0,
-      "changeable": 1,
-      "timeout": 90
-    },
-    {
       "key": "dmghg",
       "name": "🎨动漫共和┃番剧",
       "type": 3,
