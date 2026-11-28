@@ -32858,7 +32858,7 @@ class Spider(XMFCore):
                    if not ('-jsm3u8-' in u or '-covip-' in u or ('-qq-' in u and '腾讯' in f)
                            or ('-qiyi-' in u and '1080' not in f)
                            or ('-bilibili-' in u and '1080' not in f)
-                           or ('优酷' in f) or ('河豚' in f))]   # 优酷线：4kzj 全 parsesId 解析失败、cibn 云转链 30 秒即逝、oxapi 只剩明文 9090，全部放不了，先摘掉
+                           or ('优酷' in f))]   # 优酷线：4kzj 全 parsesId 解析失败、cibn 云转链 30 秒即逝、oxapi 只剩明文 9090，全部放不了，先摘掉
             ff = [f for f, _ in _kk]
             uu = [u for _, u in _kk]
             # 站点那条「优酷官方线路」是 cibn 的 flv 云转链（片头先垫 1.2MB 广告、常卡住），
@@ -32894,8 +32894,8 @@ class Spider(XMFCore):
             for f, u in lines:
                 if any(k in f for k in self.XF_SKIP) and not ('百度' in f and '网盘' in f):
                     continue   # 稀饭那边只留 4K/云线，网盘一律不上；百度网盘单独加
-                if '优酷' in f or '河豚' in f:
-                    continue   # 影探侧带出来的优酷/河豚线一并摘掉
+                if '优酷' in f:
+                    continue   # 影探侧带出来的「影探·优酷·1080P」同样摘掉
                 if any(self._nm(f) == self._nm(x) for x in ff):
                     continue
                 ff.append(f)
