@@ -31376,12 +31376,25 @@ def _iq_stream(page, force=False):
     return url
 
 
-def _iq_serve(body):
+def _iq_serve(body, base=''):
     """把抓下来的 m3u8 清单挂到 127.0.0.1 小服务上：69mzf 临时链 6 秒就死，
-    清单里的分片是爱奇艺 CDN 绝对地址，播放器拿到清单就能一直拉。"""
+    清单里的分片是爱奇艺 CDN 绝对地址，播放器拿到清单就能一直拉。
+    优酷那条的分片是相对路径（index0.ts?...），必须以原清单地址为基准补成绝对地址，
+    否则播放器会去 127.0.0.1 取分片 → 全黑。"""
     body = _dump(body)
     if '#EXTM3U' not in body[:400]:
         return ''
+    if base:
+        lines = []
+        for ln in body.splitlines():
+            t = ln.strip()
+            if t and not t.startswith('#') and not t.startswith('http'):
+                try:
+                    ln = urllib.parse.urljoin(base, t)
+                except Exception:
+                    pass
+            lines.append(ln)
+        body = '\n'.join(lines)
     import hashlib as _hl
     import threading as _th
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31454,7 +31467,7 @@ def _iq_local_play(page):
             body = ''
     if '#EXTM3U' in _dump(body)[:400]:
         _IQ_BODY[url] = (time.time(), body)
-    return _iq_serve(body)
+    return _iq_serve(body, url)
 
 
 def _tok_page(tok):
@@ -31694,6 +31707,48 @@ def _bl_play(page):
     return got
 
 
+_YOUKU_CACHE = {}
+
+
+def _m3u8_live(u, timeout=5):
+    """清单真伪：必须是 HTTP 200/206 且正文以 #EXTM3U 开头（9090 那种回 <pre></pre> 的死链）"""
+    import requests as _rq
+    try:
+        r = _rq.get(u, headers={'User-Agent': 'okhttp/4.12.0'}, timeout=timeout)
+        body = r.text or ''
+        return (r.status_code in (200, 206) and len(body) > 200
+                and body.lstrip()[:16].startswith('#EXTM3U'))
+    except Exception:
+        return False
+
+
+def _youku_play(page):
+    """优酷：oxapi 回的口有时是 9090 中转（正文 <pre></pre> 死链），
+    所以先验再给；不灵就退回 4kzj 解密 + 本地清单代理。"""
+    page = _dump(page)
+    if not page.startswith('http'):
+        return ''
+    hit = _YOUKU_CACHE.get(page)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    cands = []
+    o = _ox_play(page)
+    if o:
+        cands.append(o)
+    lp = _iq_local_play(page)
+    if lp:
+        cands.append(lp)
+    url = ''
+    for u in cands:
+        if _m3u8_live(u):
+            url = u
+            break
+    _YOUKU_CACHE[page] = (time.time() + (600 if url else 30), url)
+    while len(_YOUKU_CACHE) > 80:
+        _YOUKU_CACHE.pop(next(iter(_YOUKU_CACHE)), None)
+    return url
+
+
 def _ox_play(page):
     """平台播放页 → 真 m3u8（oxapi 默认档；优酷这类只有这个口认）"""
     page = _dump(page)
@@ -31741,11 +31796,7 @@ def _fix_platform_page(url):
         if 'bilibili.com/video/' in url or 'bilibili.com/bangumi/play/' in url:
             return _bl_play(url)
         if 'youku.com/v_show/' in url or 'youku.com/alipay_video/' in url:
-            got = _ox_play(url)
-            if got:
-                return got
-            # oxapi 被限流时退回 4kzj 解密 + 本地清单代理
-            return _iq_local_play(url)
+            return _youku_play(url)
     except Exception:
         return ''
     return ''
@@ -32589,7 +32640,8 @@ class Spider(XMFCore):
             # 「腾讯官方线路」(-qq-) 用我们自己的官方 m3u8 顶替，站点那条也摘掉
             _kk = [(f, u) for f, u in zip(ff, uu)
                    if not ('-jsm3u8-' in u or '-covip-' in u or ('-qq-' in u and '腾讯' in f)
-                           or ('-qiyi-' in u and '1080' not in f))]
+                           or ('-qiyi-' in u and '1080' not in f)
+                           or ('-bilibili-' in u and '1080' not in f))]
             ff = [f for f, _ in _kk]
             uu = [u for _, u in _kk]
             _cached_bd = _BD_LINE_CACHE.get(_bd_norm(str(vod.get('vod_name') or '')))
