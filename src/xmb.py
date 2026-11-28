@@ -32685,7 +32685,8 @@ class Spider(XMFCore):
             _kk = [(f, u) for f, u in zip(ff, uu)
                    if not ('-jsm3u8-' in u or '-covip-' in u or ('-qq-' in u and '腾讯' in f)
                            or ('-qiyi-' in u and '1080' not in f)
-                           or ('-bilibili-' in u and '1080' not in f))]
+                           or ('-bilibili-' in u and '1080' not in f)
+                           or ('优酷' in f))]   # 优酷线：4kzj 全 parsesId 解析失败、cibn 云转链 30 秒即逝、oxapi 只剩明文 9090，全部放不了，先摘掉
             ff = [f for f, _ in _kk]
             uu = [u for _, u in _kk]
             # 站点那条「优酷官方线路」是 cibn 的 flv 云转链（片头先垫 1.2MB 广告、常卡住），
