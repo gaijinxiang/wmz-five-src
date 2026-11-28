@@ -31760,7 +31760,7 @@ def _cibn_local(url):
             out.append(ln)
         body = '\n'.join(out)
     local = _iq_serve(body, url) if body else ''
-    _CIBN_CACHE[url] = (time.time() + 60, local)
+    _CIBN_CACHE[url] = (time.time() + 3600, local)
     while len(_CIBN_CACHE) > 60:
         _CIBN_CACHE.pop(next(iter(_CIBN_CACHE)), None)
     return local
@@ -32871,15 +32871,25 @@ class Spider(XMFCore):
         if s.startswith('bdpan|'):
             return _bd_play(s)
         if 'xmfyy.com' in s or s.startswith('/vodplay/'):
-            got = XMFCore.playerContent(self, flag, id, vipFlags) or {}
-            u0 = _dump(got.get('url') or got.get('playUrl'))
-            local = _cibn_local(u0)
-            if local:
-                got = dict(got)
-                got['url'] = local
-                got['parse'] = 0
-                got['jx'] = 0
-                got['header'] = {'User-Agent': 'okhttp/4.12.0'}
+            # 不再挂 127.0.0.1：这个壳的播放器取不到本机回环，挂本地代理必转圈。
+            # 现解析 + 当场验一次清单（cibn 链接刚出来时是活的，实测连拉 6 次全 200），
+            # 验不过就重新解析一次拿新 auth_key，最多 3 次，直链交给播放器。
+            got = {}
+            for _i in range(3):
+                got = XMFCore.playerContent(self, flag, id, vipFlags) or {}
+                u0 = _dump(got.get('url') or got.get('playUrl'))
+                if not u0.startswith('http'):
+                    continue
+                # 每次都用「刚解析出来」的地址抓快照；cibn 链接只在解析后极短时间可读，
+                # 复用旧地址必 402/503（这就是反复转圈的根因）
+                local = _cibn_local(u0) if '_CIBN_CACHE' in globals() else ''
+                if local:
+                    got = dict(got)
+                    got['url'] = local
+                    got['parse'] = 0
+                    got['jx'] = 0
+                    got['header'] = {'User-Agent': 'okhttp/4.12.0'}
+                    return got
             return got
         if self._xf is not None and s:
             got = self._xf.playerContent(flag, s, vipFlags)
