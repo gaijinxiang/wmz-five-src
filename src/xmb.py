@@ -30957,6 +30957,39 @@ def _sx_eps(title):
     return 0
 
 
+def _sx_search_posts(name, budget=6.0):
+    """双星站内搜 → [(标题, 详情页url, 标题集数)]"""
+    out = []
+    dl = time.time() + budget
+    for host in _SX_HOSTS:
+        if time.time() > dl:
+            break
+        txt = _sx_get(host + '/search/?keyword=' + urllib.parse.quote(name), min(5.0, dl - time.time()))
+        if not txt:
+            continue
+        for m in re.finditer(r'href="([^"]*/[a-z]{1,4}/\d+\.html)"[^>]*>\s*([^<]{2,80})<', txt, re.I):
+            u = urllib.parse.urljoin(host, m.group(1))
+            t = re.sub(r'\s+', ' ', m.group(2)).strip()
+            if not t or u in [x[1] for x in out]:
+                continue
+            out.append((t, u, _sx_eps(t)))
+        if out:
+            break
+    return out[:12]
+
+
+def _sx_detail(url, budget=5.0):
+    """双星详情页 → (标题, 集数, [百度分享])"""
+    body = _sx_get(url, budget)
+    if not body:
+        return '', 0, []
+    ttl = ''
+    m = re.search(r'<h1[^>]*>(.*?)</h1>', body, re.S)
+    if m:
+        ttl = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+    return ttl, _sx_eps(ttl), _sx_pan_links(body)
+
+
 def _sx_baidu_shares(name, budget=7.0):
     """双星（star2.cn）搜片名 → 进详情页抓百度分享。返回 [(标签, 链接)]"""
     key = _bd_norm(name)
@@ -31323,6 +31356,38 @@ class Spider(XMFCore):
     BD_BUDGET = 12.0          # 百度网盘线（快映/木偶）最多等这么久
     XF_SKIP = ('网盘', '快映', '木偶', '玩偶', '剧透')   # 这些线不往小蜜蜂面板里塞
 
+    def _sx_only_detail(self, url):
+        """搜索兜底进来的双星资源：自己组的详情，只带百度网盘线"""
+        ttl, eps, pan = _sx_detail(_dump(url), 6.0)
+        name = re.sub(r'^【[^】]{1,6}】', '', ttl or '双星资源').strip()
+        eps_txt = ('更%d集' % eps) if eps and eps > 0 else ('全集' if eps == -1 else '')
+        lines, urls = [], []
+        for u in pan[:2]:
+            e = _bd_eps(u, 18.0)
+            if not e:
+                continue
+            cnt = len(e.split('#'))
+            tag = '双星·网盘·百度网盘·%d集' % cnt
+            if eps and eps > 0 and cnt < eps:
+                tag += '(标题%d集)' % eps
+            lines.append(tag)
+            urls.append(e)
+        if not lines:
+            return {'list': [{'vod_id': 'sx|' + url, 'vod_name': name,
+                              'vod_pic': '', 'vod_remarks': eps_txt,
+                              'vod_content': '双星资源，但百度分享打不开（可能已失效/需要转存）',
+                              'vod_play_from': '提示线路',
+                              'vod_play_url': '提示$https://1.star2.cn%s' % url}]}
+        return {'list': [{
+            'vod_id': 'sx|' + url,
+            'vod_name': name,
+            'vod_pic': '',
+            'vod_remarks': eps_txt,
+            'vod_content': '来自双星（star2.cn），百度网盘直连',
+            'vod_play_from': '$$$'.join(lines),
+            'vod_play_url': '$$$'.join(urls),
+        }]}
+
     # ---- 壳兼容层：老壳只传 2 个参数（不带 pg），不兜就抛异常，壳会当成"搜索不可用"
     def homeContent(self, filter=True):
         return XMFCore.homeContent(self, filter)
@@ -31334,7 +31399,26 @@ class Spider(XMFCore):
         return XMFCore.categoryContent(self, tid, pg or '1', filter, extend or {})
 
     def searchContent(self, key, quick=True, pg='1'):
-        return XMFCore.searchContent(self, key, quick, pg or '1')
+        try:
+            r = XMFCore.searchContent(self, key, quick, pg or '1')
+        except Exception:
+            r = {'list': []}
+        # 主站搜不到（或壳只给了一个词），用双星站内搜兜底，搜出来点进去照样有网盘线
+        try:
+            if not (r or {}).get('list') and key:
+                vt = []
+                for t, u, e in _sx_search_posts(key, 6.0):
+                    vt.append({
+                        'vod_id': 'sx|' + u,
+                        'vod_name': t,
+                        'vod_pic': '',
+                        'vod_remarks': ('更%d集' % e) if e and e > 0 else ('全集' if e == -1 else ''),
+                    })
+                if vt:
+                    r = {'list': vt, 'page': 1, 'pagecount': 1, 'limit': 90, 'total': len(vt)}
+        except Exception:
+            pass
+        return r
 
     def __init__(self):
         XMFCore.__init__(self)
@@ -31419,6 +31503,14 @@ class Spider(XMFCore):
 
     def detailContent(self, ids):
         import threading as _th
+        _sid = ''
+        try:
+            _ids = ids if isinstance(ids, (list, tuple)) else [ids]
+            _sid = str(_ids[0]) if _ids else ''
+        except Exception:
+            _sid = str(ids)
+        if _sid.startswith('sx|'):
+            return self._sx_only_detail(_sid[3:])
         _box = {}
 
         def _job():
