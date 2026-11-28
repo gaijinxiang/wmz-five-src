@@ -32232,6 +32232,39 @@ def _muou_quark(name, budget=9.0):
         return qk[0]
     return ''
 
+def _muou_baidu(name, budget=9.0):
+    """木偶（333.333291.xyz）详情页 → 百度分享链接"""
+    import requests as _rq
+    key = _bd_norm(name)
+    if not key:
+        return ''
+    try:
+        r = _rq.get('%s/index.php/vod/search/wd/%s.html' % (_MUOU_HOST, quote(name)),
+                    headers={'User-Agent': pn_PC_UA}, timeout=6)
+        html = r.text or ''
+    except Exception:
+        return ''
+    ids = []
+    for m in _re.finditer(r'/index\.php/vod/detail/id/(\d+)\.html', html):
+        if m.group(1) not in ids:
+            ids.append(m.group(1))
+    for did in ids[:3]:
+        try:
+            d = _rq.get('%s/index.php/vod/detail/id/%s.html' % (_MUOU_HOST, did),
+                        headers={'User-Agent': pn_PC_UA}, timeout=6).text or ''
+        except Exception:
+            continue
+        ttl = ''
+        m = _re.search(r'<title>(.*?)</title>', d, _re.S | _re.I)
+        if m:
+            ttl = _re.sub(r'[-—|].*$', '', m.group(1)).strip()
+        if key not in _bd_norm(ttl):
+            continue
+        bd = _re.findall(r'https://pan\.baidu\.com/s/[0-9A-Za-z_\-]+(?:\?pwd=\w+)?', d)
+        if bd:
+            return bd[0]
+    return ''
+
 def _muou_eps(share_url, maxn=400):
     """夸克分享 → 集表（第N集$muouk:pwd|fid|fid_token）"""
     try:
@@ -32687,6 +32720,12 @@ class Spider(XMFCore):
                 if not _nm:
                     return
                 try:
+                    _shb = _muou_baidu(_nm, 9.0)
+                    if _shb:
+                        _eb = _bd_eps(_shb, 14.0)
+                        if _eb:
+                            _box['muou'] = ('木偶·网盘·百度网盘·%d集' % len(_eb.split('#')), _eb)
+                            return
                     _sh = _muou_quark(_nm, 9.0)
                     if not _sh:
                         return
