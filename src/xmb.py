@@ -32031,7 +32031,8 @@ class Spider(XMFCore):
         import requests as _rq
         try:
             if '.m3u8' in u:
-                m = _rq.get(u, headers={'User-Agent': 'Mozilla/5.0'}, timeout=1.5)
+                # 有些源的 m3u8 是几百 KB 的超长清单（1 秒一段），1.5 秒拉不完会误判失效
+                m = _rq.get(u, headers={'User-Agent': 'Mozilla/5.0'}, timeout=4.0)
                 seg = next((x.strip() for x in (m.text or '').split('\n')
                             if x.strip() and not x.startswith('#')), '')
                 if not seg:
