@@ -1,8 +1,19 @@
 {
   "sites": [
     {
-      "key": "xmb_xf",
+      "key": "xmb_cdn",
       "name": "🐝小蜜蜂｜全剧",
+      "type": 3,
+      "api": "https://aka.doubaocdn.com/s/TyHa4hkpeU",
+      "searchable": 1,
+      "quickSearch": 1,
+      "filterable": 0,
+      "changeable": 1,
+      "timeout": 60
+    },
+    {
+      "key": "xmb_xf",
+      "name": "🐝小蜜蜂｜全剧(备用)",
       "type": 3,
       "api": "https://gh-proxy.com/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/xmb.py",
       "searchable": 1,
@@ -12,10 +23,10 @@
       "timeout": 90
     },
     {
-      "key": "dmghg",
+      "key": "dmghg_cdn",
       "name": "🎨动漫共和┃番剧",
       "type": 3,
-      "api": "https://gh-proxy.com/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/dmghg.py",
+      "api": "https://aka.doubaocdn.com/s/DhqYsiIInw",
       "searchable": 1,
       "quickSearch": 1,
       "filterable": 0,
