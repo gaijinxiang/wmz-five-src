@@ -31072,7 +31072,7 @@ def _tx_clean(x):
     return re.sub(r'<[^>]+>', '', _dump(x)).strip()
 
 
-def _tx_eps(name, budget=10.0, max_eps=60):
+def _tx_eps(name, budget=10.0, max_eps=400):
     """腾讯官方：搜索同名正片 → 集表 [(集名, 播放页)]；剔预告/花絮"""
     name = _dump(name)
     if not name:
@@ -31086,11 +31086,17 @@ def _tx_eps(name, budget=10.0, max_eps=60):
             'transInfo': '', 'isneedQc': True, 'preQid': '', 'adClientInfo': '',
             'extraInfo': {'isNewMarkLabel': '1', 'multi_terminal_pc': '1', 'themeType': '1',
                           'sugRelatedIds': '{}', 'appVersion': ''}}
-    payload = _tx_json(TX_SEARCH, body, min(10.0, budget))
-    data = payload.get('data') or {}
-    rows = list(((data.get('normalList') or {}).get('itemList') or []))
-    for box in (data.get('areaBoxList') or []):
-        rows.extend((box or {}).get('itemList') or [])
+    rows = []
+    for _try in range(3):
+        body['uuid'] = 'tx-%d-%d' % (int(time.time()), _try)
+        payload = _tx_json(TX_SEARCH, body, min(10.0, budget))
+        data = payload.get('data') or {}
+        rows = list(((data.get('normalList') or {}).get('itemList') or []))
+        for box in (data.get('areaBoxList') or []):
+            rows.extend((box or {}).get('itemList') or [])
+        if rows:
+            break
+        time.sleep(0.3)
 
     def _bn(v):
         return re.sub(r'(第[0-9一二三四五六七八九十]+季|[0-9]+季|年番[0-9]*|最终季|完结季|新番)', '',
@@ -31100,8 +31106,13 @@ def _tx_eps(name, budget=10.0, max_eps=60):
     for e in rows:
         if not isinstance(e, dict):
             continue
+        doc0 = e.get('doc') or {}
         info = e.get('videoInfo') or {}
-        aid = _dump((e.get('doc') or {}).get('id'))
+        aid = _dump(doc0.get('id'))
+        dt = doc0.get('dataType')
+        # dataType=1 是站内短视频/UGC（搜索里它们占大头），只有 dataType=2 才是正片专辑
+        if dt == 1:
+            continue
         title = _tx_clean(info.get('title'))
         if not TX_ID_RE.match(aid) or not title:
             continue
@@ -31128,7 +31139,7 @@ def _tx_eps(name, budget=10.0, max_eps=60):
         return []
     import threading as _th
     fields, lock = {}, _th.Lock()
-    chunks = [vids[i:i + 20] for i in range(0, len(vids), 20)][:6]
+    chunks = [vids[i:i + 20] for i in range(0, len(vids), 20)][:12]
 
     def work(chunk):
         try:
@@ -31152,12 +31163,10 @@ def _tx_eps(name, budget=10.0, max_eps=60):
     for vid in vids:
         inf = fields.get(vid) or {}
         t = _tx_clean(inf.get('title'))
-        uncut = any(k in t for k in ('预告', '花絮', '片花', '彩蛋', '特辑', '抢先看', '先导', '看点', '解说'))
-        try:
-            dur = float(re.sub(r'[^0-9.]', '', _dump(inf.get('duration')) or '0') or 0)
-        except Exception:
-            dur = 0
-        if multi and (uncut or (dur and dur < 600)):
+        uncut = any(k in t for k in ('预告', '花絮', '片花', '彩蛋', '特辑', '抢先看', '先导', '看点', '解说', '合集'))
+        # 只按标题剔花絮：这个接口的 duration 单位不统一（20 分钟的国语集会给 336），
+        # 拿它当“时长不足就是花絮”会把正片整片误杀，所以不看时长
+        if multi and uncut:
             continue
         n += 1
         eps.append(('第%d集' % n, 'https://v.qq.com/x/cover/%s/%s.html' % (album, vid)))
