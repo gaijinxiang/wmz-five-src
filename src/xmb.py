@@ -31205,6 +31205,239 @@ def _tx_play(page):
     return url
 
 
+# ---------------- 爱奇艺 官方（官方集页 + 4kzj 解密 + 本地清单代理）----------------
+IQ_SEARCH = 'https://mesh.if.iqiyi.com/portal/lw/search/homePageV3?key='
+IQ_EPS_API = 'https://pcw-api.iqiyi.com/albums/album/avlistinfo?aid=%s&page=%s&size=50'
+IQ_WEB_API = 'https://4kzj.lyyytv.cn/api/index?appid=10001&videoUrl='
+IQ_WEB_IDS = (5, 3, 1, 2)      # parsesId=5 才认爱奇艺 v_ 页，其余是新版口
+IQ_DEC_PREFIX = 'https://baidu.con/'
+_IQ_CACHE = {}
+_IQ_PAGE_CACHE = {}
+_IQ_BODY = {}
+_IQ_SRV = {'port': 0, 'srv': None, 'body': {}, 'lock': None}
+
+
+def _iq_json(url, ref='https://www.iqiyi.com/', timeout=8):
+    import requests as _rq
+    try:
+        r = _rq.get(url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': ref}, timeout=timeout)
+        if r.status_code != 200:
+            return {}
+        return r.json()
+    except Exception:
+        return {}
+
+
+def _iq_plain(x):
+    return re.sub(r'[^0-9a-z\u4e00-\u9fff]', '', _dump(x)).lower()
+
+
+def _iq_pages(name, budget=9.0):
+    """爱奇艺官方：片名 → 每集 v_ 播放页 [(集名, 页)]，只认爱奇艺自家正片"""
+    key = _iq_plain(name)
+    hit = _IQ_CACHE.get(key)
+    if hit and time.time() - hit[0] < 900:
+        return hit[1]
+    want = re.sub(r'[^0-9a-z\u4e00-\u9fff]', '', _dump(name)).lower()
+    cands = []
+    try:
+        j = _iq_json(IQ_SEARCH + urllib.parse.quote(_dump(name), safe=''), timeout=min(9.0, budget))
+        for tpl in ((j.get('data') or {}).get('templates') or []):
+            rows = []
+            if isinstance(tpl.get('albumInfo'), dict):
+                rows.append(tpl['albumInfo'])
+            rows.extend(tpl.get('intentAlbumInfos') or [])
+            for a in rows:
+                if not isinstance(a, dict):
+                    continue
+                site = _dump(a.get('siteId')).lower()
+                if site and site != 'iqiyi':
+                    continue
+                title = _dump(a.get('title')).strip()
+                aid = _dump(a.get('qipuId'))
+                if not title or not aid:
+                    continue
+                try:
+                    total = int(a.get('totalNumber') or 0)
+                except Exception:
+                    total = 0
+                if total <= 0:
+                    m = re.search(r'(\d+)\s*集', _dump(a.get('subscriptContent')))
+                    total = int(m.group(1)) if m else 0
+                if total <= 0:
+                    continue          # 短视频/花絮没集数，不接
+                nt = _iq_plain(title)
+                sc = 0 if nt == want else (1 if (nt.startswith(want) or want.startswith(nt)) else 2)
+                if sc >= 2:
+                    continue
+                cands.append((sc, -total, aid, _dump(a.get('pageUrl')))
+                             if 'qipuId' in a and site == 'iqiyi' else (sc, -total, aid, ''))
+    except Exception:
+        cands = []
+    cands.sort(key=lambda x: (x[0], x[1]))
+    pages = []
+    for _sc, _nt, aid, purl in cands[:3]:
+        urls = []
+        for pg in (1, 2, 3):
+            j = _iq_json(IQ_EPS_API % (aid, pg))
+            eps = ((j.get('data') or {}).get('epsodelist') or [])
+            for e in eps:
+                u = _dump(e.get('playUrl')).replace('http://', 'https://')
+                if u:
+                    urls.append(u)
+            if len(eps) < 50:
+                break
+        if urls:
+            pages = urls
+            break
+        if purl.startswith('https://www.iqiyi.com/v_'):
+            pages = [purl]
+            break
+    if pages:
+        rows = [('第%d集' % (i + 1), u) for i, u in enumerate(pages)]
+        _IQ_CACHE[key] = (time.time(), rows)
+        while len(_IQ_CACHE) > 40:
+            _IQ_CACHE.pop(next(iter(_IQ_CACHE)), None)
+        return rows
+    return []
+
+
+def _iq_unwrap(text):
+    """4kzj 回包 → 真实地址；baidu.con 前缀是 AES-CBC（前 16 字符当 key+AES）"""
+    text = _dump(text)
+    if not text:
+        return ''
+    m = re.search(r'"url"\s*:\s*"([^"]+)"', text)
+    cand = m.group(1).replace('\\/', '/') if m else text
+    if cand.startswith(IQ_DEC_PREFIX):
+        rest = cand[len(IQ_DEC_PREFIX):]
+        if len(rest) <= 16:
+            return ''
+        try:
+            from Crypto.Cipher import AES
+            from Crypto.Util.Padding import unpad
+        except Exception:
+            return ''
+        try:
+            key = rest[:16].encode('utf-8')
+            raw = base64.b64decode(rest[16:] + '=' * (-len(rest[16:]) % 4))
+            out = unpad(AES.new(key, AES.MODE_CBC, key).decrypt(raw), 16).decode('utf-8', 'replace').strip()
+            return out if out.startswith('http') else ''
+        except Exception:
+            return ''
+    return cand if cand.startswith('http') else ''
+
+
+def _iq_stream(page, force=False):
+    """爱奇艺集页 → 临时 m3u8（默认一轮 4 个解析口，播放时再补一轮）"""
+    page = _dump(page)
+    if not page.startswith('http'):
+        return ''
+    if not force:
+        hit = _IQ_PAGE_CACHE.get(page)
+        if hit and hit[0] > time.time() and hit[1]:
+            return hit[1]
+    import requests as _rq
+    url = ''
+    ids = IQ_WEB_IDS + ((5, 3, 1, 2) if force else ())
+    for pid in ids:
+        try:
+            r = _rq.get(IQ_WEB_API + urllib.parse.quote(page, safe='') + '&parsesId=%d' % pid,
+                        headers={'User-Agent': 'okhttp/4.12.0', 'Referer': 'https://www.iqiyi.com/',
+                                 'Accept-Encoding': 'identity'}, timeout=7)
+            url = _iq_unwrap(r.text or '')
+            if url:
+                break
+        except Exception:
+            url = ''
+        time.sleep(0.3)
+    _IQ_PAGE_CACHE[page] = (time.time() + (600 if url else 6), url)
+    while len(_IQ_PAGE_CACHE) > 60:
+        _IQ_PAGE_CACHE.pop(next(iter(_IQ_PAGE_CACHE)), None)
+    return url
+
+
+def _iq_serve(body):
+    """把抓下来的 m3u8 清单挂到 127.0.0.1 小服务上：69mzf 临时链 6 秒就死，
+    清单里的分片是爱奇艺 CDN 绝对地址，播放器拿到清单就能一直拉。"""
+    body = _dump(body)
+    if '#EXTM3U' not in body[:400]:
+        return ''
+    import hashlib as _hl
+    import threading as _th
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    sid = _hl.md5(body.encode('utf-8')).hexdigest()[:20]
+    if _IQ_SRV['lock'] is None:
+        _IQ_SRV['lock'] = _th.Lock()
+
+    class _H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, head):
+            s0 = self.path.split('?')[0].rstrip('/').rsplit('/', 1)[-1]
+            if s0.endswith('.m3u8'):
+                s0 = s0[:-5]
+            b = _IQ_SRV['body'].get(s0)
+            if not b:
+                self.send_response(404)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
+            self.send_header('Content-Length', str(len(b)))
+            self.send_header('Accept-Ranges', 'none')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            if not head:
+                try:
+                    self.wfile.write(b)
+                except Exception:
+                    pass
+
+        def do_GET(self):
+            self._send(False)
+
+        def do_HEAD(self):
+            self._send(True)
+
+    with _IQ_SRV['lock']:
+        _IQ_SRV['body'][sid] = body.encode('utf-8')
+        if not _IQ_SRV['port']:
+            try:
+                srv = ThreadingHTTPServer(('127.0.0.1', 0), _H)
+                srv.daemon_threads = True
+                _IQ_SRV['srv'] = srv
+                _IQ_SRV['port'] = srv.server_address[1]
+                _th.Thread(target=srv.serve_forever, daemon=True).start()
+            except Exception:
+                return ''
+    return 'http://127.0.0.1:%d/iq/%s.m3u8' % (_IQ_SRV['port'], sid)
+
+
+def _iq_local_play(page):
+    """播放：现解析 + 现抓清单 + 转本地地址，避开临时链过期"""
+    page = _dump(page)
+    url = _iq_stream(page, True) or _iq_stream(page)
+    if not url:
+        return ''
+    body = ''
+    hit = _IQ_BODY.get(url)
+    if hit and time.time() - hit[0] < 600:
+        body = hit[1]
+    if '#EXTM3U' not in _dump(body)[:400]:
+        import requests as _rq
+        try:
+            r = _rq.get(url, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'identity'}, timeout=6)
+            body = r.text or ''
+        except Exception:
+            body = ''
+    if '#EXTM3U' in _dump(body)[:400]:
+        _IQ_BODY[url] = (time.time(), body)
+    return _iq_serve(body)
+
+
 # ---------------- 双星（双芯 / star2.cn）--------------------------------
 _SX_HOSTS = ('https://1.star2.cn', 'https://2.star2.cn', 'https://star2.cn')
 _SX_CACHE = {}
@@ -31908,6 +32141,7 @@ class Spider(XMFCore):
         _bd_thread = None
         _mg_thread = None
         _tx_thread = None
+        _iq_thread = None
         try:
             _one0 = ((core or {}).get('list') or [None])[0]
             _box['name'] = str((_one0 or {}).get('vod_name') or '')
@@ -31950,9 +32184,28 @@ class Spider(XMFCore):
                 except Exception:
                     _box['tx'] = []
 
+            def _job_iq():
+                """爱奇艺官方：官方集页 + 4kzj 解密 + 本地清单代理，1080P"""
+                try:
+                    _nm = _box.get('name') or ''
+                    _e = _iq_pages(_nm, 9.0)
+                    if not _e:
+                        _box['iq'] = []
+                        return
+                    if not _iq_stream(_e[0][1]):
+                        _box['iq'] = []
+                        return
+                    _box['iq'] = [('爱奇艺官方·1080P',
+                                   '#'.join('%s$iqweb:%s' % (lab, page) for lab, page in _e))]
+                except Exception:
+                    _box['iq'] = []
+
             _bd_thread = _th.Thread(target=_job_bd)
             _mg_thread = _th.Thread(target=_job_mg)
             _tx_thread = _th.Thread(target=_job_tx)
+            _iq_thread = _th.Thread(target=_job_iq)
+            _iq_thread.daemon = True
+            _iq_thread.start()
             _mg_thread.daemon = True
             _mg_thread.start()
             _tx_thread.daemon = True
@@ -31977,7 +32230,13 @@ class Spider(XMFCore):
                 _tx_thread.join(9.0)
         except Exception:
             pass
-        lines = list(_box.get('xf') or []) + list(_box.get('mg') or []) + list(_box.get('tx') or []) + list(_box.get('bd') or [])
+        try:
+            if _iq_thread is not None:
+                _iq_thread.join(10.0)
+        except Exception:
+            pass
+        lines = (list(_box.get('xf') or []) + list(_box.get('mg') or []) + list(_box.get('tx') or [])
+                 + list(_box.get('iq') or []) + list(_box.get('bd') or []))
         for vod in ((core or {}).get('list') or []):
             if not isinstance(vod, dict):
                 continue
@@ -32004,8 +32263,8 @@ class Spider(XMFCore):
                 ff.append(f)
                 uu.append(u)
             # 我们这条腾讯官方 m3u8 排到第一位，点开就能播
-            _mine = [(f, u) for f, u in zip(ff, uu) if 'txhd:' in u]
-            _keep = [(f, u) for f, u in zip(ff, uu) if 'txhd:' not in u]
+            _mine = [(f, u) for f, u in zip(ff, uu) if ('txhd:' in u or 'iqweb:' in u)]
+            _keep = [(f, u) for f, u in zip(ff, uu) if not ('txhd:' in u or 'iqweb:' in u)]
             vod['vod_play_from'] = '$$$'.join([f for f, _ in _mine + _keep])
             vod['vod_play_url'] = '$$$'.join([u for _, u in _mine + _keep])
         for vod in ((core or {}).get('list') or []):
@@ -32116,6 +32375,13 @@ class Spider(XMFCore):
             if u:
                 return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': 'okhttp/4.12.0'}}
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': '腾讯这集没解析出流，换条线路试试'}
+        if s.startswith('iqweb:'):
+            page = s.split(':', 1)[1]
+            u = _iq_local_play(page)
+            if u:
+                return {'parse': 0, 'jx': 0, 'url': u,
+                        'header': {'User-Agent': 'okhttp/4.12.0'}}
+            return {'parse': 0, 'jx': 0, 'url': '', 'msg': '爱奇艺这集没解出流，换条线路试试'}
         if s.startswith('bdpan|'):
             return _bd_play(s)
         if 'xmfyy.com' in s or s.startswith('/vodplay/'):
