@@ -31030,6 +31030,172 @@ def _mg_play(page, fourk=False):
     return url
 
 
+# ---------------- 腾讯视频 官方（搜索 + 集表 + oxapi 1080）----------------
+TX_SEARCH = ('https://pbaccess.video.qq.com/trpc.videosearch.mobile_search.'
+             'MultiTerminalSearch/MbSearch?vplatform=2')
+TX_DETAIL = 'https://node.video.qq.com/x/api/float_vinfo2?cid='
+TX_EPS = ('https://union.video.qq.com/fcgi-bin/data?otype=json&tid=1804&appid=20001238'
+          '&appkey=6c03bbe9658448a4&union_platform=1&idlist=')
+TX_ID_RE = re.compile(r'^[a-zA-Z0-9]{8,32}$')
+_TX_CACHE = {}
+_TX_OX_CACHE = {}
+
+
+def _tx_json(url, body=None, timeout=9):
+    """腾讯接口 GET/POST 统一入口，偶尔回 JSONP 壳"""
+    import requests as _rq
+    hd = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://v.qq.com/',
+          'Origin': 'https://v.qq.com', 'Accept-Encoding': 'identity'}
+    try:
+        if body is not None:
+            hd['Content-Type'] = 'application/json'
+            r = _rq.post(url, data=json.dumps(body).encode('utf-8'), headers=hd, timeout=timeout)
+        else:
+            r = _rq.get(url, headers=hd, timeout=timeout)
+        raw = (r.text or '').strip()
+    except Exception:
+        return {}
+    if raw[:1] != '{':
+        i = raw.find('{')
+        if i < 0:
+            return {}
+        raw = raw[i:]
+        j = raw.rfind('}')
+        raw = raw[:j + 1] if j >= 0 else ''
+    try:
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def _tx_clean(x):
+    return re.sub(r'<[^>]+>', '', _dump(x)).strip()
+
+
+def _tx_eps(name, budget=10.0, max_eps=60):
+    """腾讯官方：搜索同名正片 → 集表 [(集名, 播放页)]；剔预告/花絮"""
+    name = _dump(name)
+    if not name:
+        return []
+    hit = _TX_CACHE.get(_bd_norm(name))
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    body = {'version': '25042201', 'clientType': 1, 'filterValue': '',
+            'uuid': 'tx-%d' % int(time.time()), 'retry': 0, 'query': name, 'pagenum': 0,
+            'isPrefetch': True, 'pagesize': 30, 'queryFrom': 0, 'searchDatakey': '',
+            'transInfo': '', 'isneedQc': True, 'preQid': '', 'adClientInfo': '',
+            'extraInfo': {'isNewMarkLabel': '1', 'multi_terminal_pc': '1', 'themeType': '1',
+                          'sugRelatedIds': '{}', 'appVersion': ''}}
+    payload = _tx_json(TX_SEARCH, body, min(10.0, budget))
+    data = payload.get('data') or {}
+    rows = list(((data.get('normalList') or {}).get('itemList') or []))
+    for box in (data.get('areaBoxList') or []):
+        rows.extend((box or {}).get('itemList') or [])
+
+    def _bn(v):
+        return re.sub(r'(第[0-9一二三四五六七八九十]+季|[0-9]+季|年番[0-9]*|最终季|完结季|新番)', '',
+                      re.sub(r'\s+', '', _dump(v)))
+    want = _bd_norm(name)
+    album, score, base = '', 9, ''
+    for e in rows:
+        if not isinstance(e, dict):
+            continue
+        info = e.get('videoInfo') or {}
+        aid = _dump((e.get('doc') or {}).get('id'))
+        title = _tx_clean(info.get('title'))
+        if not TX_ID_RE.match(aid) or not title:
+            continue
+        sites = [x for x in (info.get('playSites') or []) + (info.get('episodeSites') or [])
+                 if isinstance(x, dict)]
+        if sites and not [x for x in sites if x.get('enName') == 'qq']:
+            continue   # 不是腾讯独播/自有的片，官方页解析不了
+        got = re.sub(r'\s+', '', title)
+        if _bn(title) and _bn(title) == _bn(name):
+            base = base or aid
+        sc = 0 if got == re.sub(r'\s+', '', name) else (1 if (got in re.sub(r'\s+', '', name) or re.sub(r'\s+', '', name) in got) else 2)
+        if sc < score:
+            score, album = sc, aid
+    if not album and base:
+        album, score = base, 0
+    if not album or score > 1:
+        _TX_CACHE[_bd_norm(name)] = (time.time(), [])
+        return []
+    detail = _tx_json(TX_DETAIL + urllib.parse.quote(album), None, min(8.0, budget))
+    core = (detail.get('c') or {}) if isinstance(detail, dict) else {}
+    vids = [x for x in (core.get('video_ids') or []) if TX_ID_RE.match(_dump(x))]
+    if not vids:
+        _TX_CACHE[_bd_norm(name)] = (time.time(), [])
+        return []
+    import threading as _th
+    fields, lock = {}, _th.Lock()
+    chunks = [vids[i:i + 20] for i in range(0, len(vids), 20)][:6]
+
+    def work(chunk):
+        try:
+            got = _tx_json(TX_EPS + ','.join(chunk), None, 8)
+        except Exception:
+            return
+        with lock:
+            for row in (got.get('results') or []):
+                f = row.get('fields') if isinstance(row, dict) else None
+                if isinstance(f, dict) and f.get('vid'):
+                    fields[f['vid']] = f
+    ths = [_th.Thread(target=work, args=(c,)) for c in chunks]
+    for t in ths:
+        t.daemon = True
+        t.start()
+    dl = time.time() + max(2.0, budget * 0.6)
+    for t in ths:
+        t.join(max(0.0, dl - time.time()))
+    multi = len(vids) > 3
+    eps, n = [], 0
+    for vid in vids:
+        inf = fields.get(vid) or {}
+        t = _tx_clean(inf.get('title'))
+        uncut = any(k in t for k in ('预告', '花絮', '片花', '彩蛋', '特辑', '抢先看', '先导', '看点', '解说'))
+        try:
+            dur = float(re.sub(r'[^0-9.]', '', _dump(inf.get('duration')) or '0') or 0)
+        except Exception:
+            dur = 0
+        if multi and (uncut or (dur and dur < 600)):
+            continue
+        n += 1
+        eps.append(('第%d集' % n, 'https://v.qq.com/x/cover/%s/%s.html' % (album, vid)))
+        if len(eps) >= max_eps:
+            break
+    if eps:
+        _TX_CACHE[_bd_norm(name)] = (time.time(), eps)
+        while len(_TX_CACHE) > 60:
+            _TX_CACHE.pop(next(iter(_TX_CACHE)), None)
+    return eps
+
+
+def _tx_play(page):
+    """腾讯播放页 → 1080 m3u8（oxapi 默认档；4K 档只回广告占位，勿用）"""
+    page = _dump(page)
+    if not page.startswith('http') or 'v.qq.com' not in page:
+        return ''
+    hit = _TX_OX_CACHE.get(page)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    import requests as _rq
+    url = ''
+    try:
+        r = _rq.get(MG_OX_API + urllib.parse.quote(page, safe=''),
+                    headers={'User-Agent': 'okhttp/4.12.0', 'Referer': 'https://v.qq.com/'}, timeout=9)
+        txt = r.text or ''
+        m = re.search(r'"url"\s*:\s*"([^"]+)"', txt)
+        if m and '傻得' not in txt[:200]:
+            url = m.group(1).replace('\\/', '/')
+    except Exception:
+        url = ''
+    if url:
+        _TX_OX_CACHE[page] = (time.time() + 90, url)
+        while len(_TX_OX_CACHE) > 300:
+            _TX_OX_CACHE.pop(next(iter(_TX_OX_CACHE)), None)
+    return url
+
+
 # ---------------- 双星（双芯 / star2.cn）--------------------------------
 _SX_HOSTS = ('https://1.star2.cn', 'https://2.star2.cn', 'https://star2.cn')
 _SX_CACHE = {}
@@ -31732,6 +31898,7 @@ class Spider(XMFCore):
         _sp_thread = None
         _bd_thread = None
         _mg_thread = None
+        _tx_thread = None
         try:
             _one0 = ((core or {}).get('list') or [None])[0]
             _box['name'] = str((_one0 or {}).get('vod_name') or '')
@@ -31758,10 +31925,29 @@ class Spider(XMFCore):
                 except Exception:
                     _box['mg'] = []
 
+            def _job_tx():
+                """腾讯官方：有这片就挂一条 1080 官方线（4K 档只回广告占位，不做）"""
+                try:
+                    _nm = _box.get('name') or ''
+                    _e = _tx_eps(_nm, 10.0)
+                    if not _e:
+                        _box['tx'] = []
+                        return
+                    if not _tx_play(_e[0][1]):
+                        _box['tx'] = []
+                        return
+                    _box['tx'] = [('腾讯官方·1080P',
+                                   '#'.join('%s$txhd:%s' % (lab, page) for lab, page in _e))]
+                except Exception:
+                    _box['tx'] = []
+
             _bd_thread = _th.Thread(target=_job_bd)
             _mg_thread = _th.Thread(target=_job_mg)
+            _tx_thread = _th.Thread(target=_job_tx)
             _mg_thread.daemon = True
             _mg_thread.start()
+            _tx_thread.daemon = True
+            _tx_thread.start()
             _bd_thread.daemon = True
             _bd_thread.start()
         except Exception:
@@ -31777,7 +31963,12 @@ class Spider(XMFCore):
                 _mg_thread.join(8.0)
         except Exception:
             pass
-        lines = list(_box.get('xf') or []) + list(_box.get('mg') or []) + list(_box.get('bd') or [])
+        try:
+            if _tx_thread is not None:
+                _tx_thread.join(9.0)
+        except Exception:
+            pass
+        lines = list(_box.get('xf') or []) + list(_box.get('mg') or []) + list(_box.get('tx') or []) + list(_box.get('bd') or [])
         for vod in ((core or {}).get('list') or []):
             if not isinstance(vod, dict):
                 continue
@@ -31898,6 +32089,12 @@ class Spider(XMFCore):
             if u:
                 return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': MG_CDN_UA}}
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': '芒果这集没解析出流，换条线路试试'}
+        if s.startswith('txhd:'):
+            page = s.split(':', 1)[1]
+            u = _tx_play(page)
+            if u:
+                return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': 'okhttp/4.12.0'}}
+            return {'parse': 0, 'jx': 0, 'url': '', 'msg': '腾讯这集没解析出流，换条线路试试'}
         if s.startswith('bdpan|'):
             return _bd_play(s)
         if 'xmfyy.com' in s or s.startswith('/vodplay/'):
