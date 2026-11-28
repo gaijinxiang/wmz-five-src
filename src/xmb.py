@@ -31697,22 +31697,78 @@ def _bl_eps(name, budget=10.0):
     return out
 
 
+_BL_DM = {}     # 播放页 → cid（B站官方弹幕 XML 直接按 cid 取）
+
+
 def _bl_play(page):
-    """哔哩哔哩播放页 → 真流。B站自家 API 直接 412（要 cookie/buvid），
-    改走 4kzj parsesId=5：回 https://baidu.con/ 密文，解出来是 DASH 的 .mpd（1080，约 5Mbps）。"""
+    """B站：4kzj 全 parsesId 已「解析失败」，它给的 .mpd 里 BaseURL 的 & 还没转义
+    （ffmpeg 报 unterminated entity reference，谁都读不了）。改走自家 playurl 的
+    progressive mp4（fnval=1）：单 URL、H.264、带 Referer 就能播；顺手把 cid 记下来，
+    原链配原平台弹幕（comment.bilibili.com/<cid>.xml，官方 XML，免登可用）。"""
     page = _dump(page)
     if not page.startswith('http'):
         return ''
     hit = _BL_CACHE.get(page)
     if hit and hit[0] > time.time():
         return hit[1]
-    got = _iq_stream(page)          # 复用爱奇艺那套解密（key=密文前 16 字符）
-    if got and not ('.mpd' in got or '.m3u8' in got):
-        got = ''
-    _BL_CACHE[page] = (time.time() + (900 if got else 20), got)
+    import requests as _rq
+    ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/120.0 Safari/537.36')
+    s0 = _rq.Session()
+    s0.headers.update({'User-Agent': ua, 'Referer': 'https://www.bilibili.com/'})
+    try:
+        s0.get('https://www.bilibili.com/', timeout=6)
+    except Exception:
+        pass
+    url = ''
+    try:
+        mep = _re.search(r'/bangumi/play/(ep\d+)', page)
+        mbv = _re.search(r'/video/(BV[0-9A-Za-z]+)', page)
+        if mep:
+            ep = mep.group(1)
+            j1 = s0.get('https://api.bilibili.com/pgc/view/web/season',
+                        params={'ep_id': ep[2:]}, timeout=8).json()
+            eps = ((j1.get('result') or {}).get('episodes') or [])
+            pick = None
+            for it in eps:
+                if str(it.get('id')) == ep[2:]:
+                    pick = it
+                    break
+            if not pick and eps:
+                pick = eps[0]
+            if pick:
+                try:
+                    _BL_DM[page] = int(pick.get('cid') or 0)
+                except Exception:
+                    pass
+                j2 = s0.get('https://api.bilibili.com/pgc/player/web/playurl',
+                            params={'ep_id': pick.get('id'), 'qn': 80, 'fnval': 1, 'fourk': 0},
+                            timeout=8).json()
+                d = ((j2.get('result') or {}).get('durl') or [])
+                if d:
+                    url = d[0].get('url') or ''
+        elif mbv:
+            bv = mbv.group(1)
+            j1 = s0.get('https://api.bilibili.com/x/web-interface/view',
+                        params={'bvid': bv}, timeout=8).json()
+            cid = ((j1.get('data') or {}).get('cid')) or 0
+            if cid:
+                try:
+                    _BL_DM[page] = int(cid)
+                except Exception:
+                    pass
+                j2 = s0.get('https://api.bilibili.com/x/player/playurl',
+                            params={'bvid': bv, 'cid': cid, 'qn': 80, 'fnval': 1, 'fourk': 0},
+                            timeout=8).json()
+                d = ((j2.get('data') or {}).get('durl') or [])
+                if d:
+                    url = d[0].get('url') or ''
+    except Exception:
+        url = ''
+    _BL_CACHE[page] = (time.time() + (600 if url else 20), url)
     while len(_BL_CACHE) > 120:
         _BL_CACHE.pop(next(iter(_BL_CACHE)), None)
-    return got
+    return url
 
 
 _YOUKU_CACHE = {}
@@ -33000,7 +33056,15 @@ class Spider(XMFCore):
             page = s.split(':', 1)[1]
             u = _bl_play(page)
             if u:
-                return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': 'okhttp/4.12.0'}}
+                out = {'parse': 0, 'jx': 0, 'url': u,
+                       'header': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                               'AppleWebKit/537.36 Chrome/120 Safari/537.36',
+                                  'Referer': 'https://www.bilibili.com/'}}
+                _cid = _BL_DM.get(page) or 0
+                if _cid:
+                    # 原链配官方弹幕（B站官方 XML，免登可取）
+                    out['danmaku'] = 'https://comment.bilibili.com/%d.xml' % _cid
+                return out
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': 'B站这集没解出流，换条线路试试'}
         if s.startswith('muouk:'):
             p3 = s.split(':', 1)[1].split('|')
