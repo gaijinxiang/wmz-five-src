@@ -31213,6 +31213,17 @@ IQ_WEB_IDS = (5, 3, 1, 2)      # parsesId=5 才认爱奇艺 v_ 页，其余是�
 IQ_DEC_PREFIX = 'https://baidu.con/'
 _IQ_CACHE = {}
 _IQ_PAGE_CACHE = {}
+# 解析口健康度（借影探4K版的做法）：HTTP 500 / 解析失败 的 pid 熔断一会儿，不再逐个白等
+_PID_HEALTH = {}
+PID_COOLDOWN = 600.0
+
+
+def _pid_ok(pid):
+    return _PID_HEALTH.get(pid, 0) < time.time()
+
+
+def _pid_mark(pid, ok):
+    _PID_HEALTH[pid] = 0 if ok else time.time() + PID_COOLDOWN
 _IQ_BODY = {}
 _IQ_SRV = {'port': 0, 'srv': None, 'body': {}, 'lock': None}
 
@@ -31339,18 +31350,26 @@ def _iq_stream(page, force=False):
             return hit[1]
     import requests as _rq
     url = ''
-    ids = IQ_WEB_IDS + ((5, 3, 1, 2) if force else ())
+    ids = [x for x in (IQ_WEB_IDS + ((5, 3, 1, 2) if force else ())) if _pid_ok(x)]
+    deadline = time.time() + 16.0     # 解析站逐个白等的总预算（借影探4K版的 16s）
     for pid in ids:
+        if time.time() > deadline:
+            break
         try:
             r = _rq.get(IQ_WEB_API + urllib.parse.quote(page, safe='') + '&parsesId=%d' % pid,
                         headers={'User-Agent': 'okhttp/4.12.0', 'Referer': 'https://www.iqiyi.com/',
-                                 'Accept-Encoding': 'identity'}, timeout=7)
-            url = _iq_unwrap(r.text or '')
+                                 'Accept-Encoding': 'identity'}, timeout=6)
+            body = r.text or ''
+            url = _iq_unwrap(body)
+            # 500 或明确「解析失败」→ 这个 pid 对这类链没戏，熔断 10 分钟
+            if r.status_code >= 500 or '"解析失败"' in body or '解析失败' in body[:200]:
+                _pid_mark(pid, False)
             if url:
+                _pid_mark(pid, True)
                 break
         except Exception:
             url = ''
-        time.sleep(0.3)
+        time.sleep(0.2)
     _IQ_PAGE_CACHE[page] = (time.time() + (600 if url else 6), url)
     while len(_IQ_PAGE_CACHE) > 60:
         _IQ_PAGE_CACHE.pop(next(iter(_IQ_PAGE_CACHE)), None)
@@ -31487,6 +31506,8 @@ def _ox_play(page):
             url = m.group(1).replace('\\/', '/')
     except Exception:
         url = ''
+    if not url:
+        _PID_HEALTH['oxapi'] = time.time() + 90.0   # 限流/失败别连着打，90 秒后再试
     if url:
         _OX_CACHE[page] = (time.time() + 120, url)
         while len(_OX_CACHE) > 200:
@@ -32355,7 +32376,7 @@ class Spider(XMFCore):
                     pass
         return core
 
-    SPEED_BUDGET = 4.0      # 量速总共等这么久（并行，测不出就不加）
+    SPEED_BUDGET = 5.2      # 量速总共等这么久（并行，测不出就不加）
     SPEED_MAX_LINES = 16
 
     def _probe_line(self, tok):
@@ -32375,7 +32396,14 @@ class Spider(XMFCore):
             if '.m3u8' in u:
                 # 有些源的 m3u8 是几百 KB 的超长清单（1 秒一段），1.5 秒拉不完会误判失效
                 m = _rq.get(u, headers={'User-Agent': 'Mozilla/5.0'}, timeout=4.0)
-                seg = next((x.strip() for x in (m.text or '').split('\n')
+                body = m.text or ''
+                ctype = (m.headers.get('Content-Type') or '').lower()
+                # 失效链常是 200 + HTML「地址已失效」，旧逻辑会当活链
+                if 'html' in ctype or '#EXTM3U' not in body[:600]:
+                    return False, 0.0
+                if any(k in body[:400] for k in ('地址已失效', '已失效', '失效', '过期')):
+                    return False, 0.0
+                seg = next((x.strip() for x in body.split('\n')
                             if x.strip() and not x.startswith('#')), '')
                 if not seg:
                     return False, 0.0
