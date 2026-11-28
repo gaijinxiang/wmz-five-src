@@ -31449,25 +31449,22 @@ def _iq_serve(body, base=''):
 
 
 def _iq_local_play(page):
-    """播放：现解析 + 现抓清单 + 转本地地址，避开临时链过期"""
+    """播放：现解析 + 当场验清单，直接交直播链（不挂 127.0.0.1——
+    这个壳的播放器取不到本机回环，挂本地代理只会「有效但放不了」）"""
     page = _dump(page)
-    url = _iq_stream(page, True) or _iq_stream(page)
-    if not url:
-        return ''
-    body = ''
-    hit = _IQ_BODY.get(url)
-    if hit and time.time() - hit[0] < 600:
-        body = hit[1]
-    if '#EXTM3U' not in _dump(body)[:400]:
-        import requests as _rq
+    import requests as _rq
+    for _try in (True, False, True):
+        url = _iq_stream(page, _try)
+        if not url:
+            continue
         try:
             r = _rq.get(url, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'identity'}, timeout=6)
-            body = r.text or ''
+            if '#EXTM3U' in _dump(r.text)[:400]:
+                return url
         except Exception:
-            body = ''
-    if '#EXTM3U' in _dump(body)[:400]:
-        _IQ_BODY[url] = (time.time(), body)
-    return _iq_serve(body, url)
+            pass
+    return ''
+    return ''
 
 
 def _tok_page(tok):
