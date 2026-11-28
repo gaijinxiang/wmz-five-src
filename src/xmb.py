@@ -31540,6 +31540,148 @@ def _k4_chain(page):
     return url
 
 
+_BL_CACHE = {}
+BL_API = 'https://api.bilibili.com'
+BL_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+         '(KHTML, like Gecko) Chrome/120.0 Safari/537.36')
+_BL_SESS = {'s': None, 't': 0}
+_BL_SEARCH_CACHE = {}
+
+
+def _bl_sess():
+    """B站接口不带 buvid3 会 412：先访问首页拿 cookie，2 小时换一次"""
+    import requests as _rq
+    s = _BL_SESS.get('s')
+    if s is not None and time.time() - _BL_SESS.get('t', 0) < 7200:
+        return s
+    s = _rq.Session()
+    s.headers.update({'User-Agent': BL_UA, 'Referer': 'https://www.bilibili.com/'})
+    try:
+        s.get('https://www.bilibili.com/', timeout=8)
+    except Exception:
+        pass
+    _BL_SESS['s'] = s
+    _BL_SESS['t'] = time.time()
+    return s
+
+
+def _bl_json(path, params=None, timeout=8):
+    try:
+        r = _bl_sess().get(BL_API + path, params=params or {}, timeout=timeout)
+        if r.status_code != 200:
+            return {}
+        d = r.json() or {}
+        return d if d.get('code') in (0, None) else {}
+    except Exception:
+        return {}
+
+
+def _bl_clean(txt):
+    return re.sub(r'<[^>]+>', '', _dump(txt)).replace('&quot;', '"').strip()
+
+
+def _bl_find(name, budget=8.0):
+    """片名 → ('season', season_id) 或 ('ugc', bvid)。番剧优先。"""
+    nm = _bl_clean(name)
+    if not nm:
+        return ()
+    hit = _BL_SEARCH_CACHE.get(nm)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    key = _iq_plain(nm)
+    cands = []      # (匹配等级, -集数, 类型, id)
+    deadline = time.time() + budget
+    for st in ('media_bangumi', 'video'):
+        if time.time() > deadline:
+            break
+        d = _bl_json('/x/web-interface/search/type',
+                     {'search_type': st, 'keyword': nm, 'page': 1}, timeout=7)
+        for it in ((d.get('data') or {}).get('result') or []):
+            if not isinstance(it, dict):
+                continue
+            title = _iq_plain(_bl_clean(it.get('title')))
+            if not title or key not in title:
+                continue
+            rank = 0 if title == key else (1 if title.startswith(key) else 2)
+            try:
+                eps = int(it.get('ep_size') or 0)
+            except Exception:
+                eps = 0
+            if st == 'media_bangumi':
+                sid = _dump(it.get('season_id') or it.get('media_id'))
+                if sid.isdigit():
+                    cands.append((rank, -eps, 'season', sid))
+            else:
+                bv = _dump(it.get('bvid'))
+                if bv.startswith('BV'):
+                    cands.append((rank + 1, -eps, 'ugc', bv))
+    got = ()
+    if cands:
+        best = sorted(cands)[0]
+        got = (best[2], best[3])
+    _BL_SEARCH_CACHE[nm] = (time.time() + 1800, got)
+    while len(_BL_SEARCH_CACHE) > 80:
+        _BL_SEARCH_CACHE.pop(next(iter(_BL_SEARCH_CACHE)), None)
+    return got
+
+
+_BL_EP_SKIP = ('预告', '花絮', '片花', '彩蛋', '特辑', '抢先看', '先导', '看点', 'PV', 'CM')
+
+
+def _bl_eps(name, budget=10.0):
+    """片名 → [(第N集, 播放页地址)]，最多 400 集"""
+    kind = _bl_find(name, budget)
+    if not kind:
+        return []
+    out = []
+    if kind[0] == 'season':
+        d = _bl_json('/pgc/view/web/season', {'season_id': kind[1]}, timeout=8)
+        for e in ((d.get('result') or {}).get('episodes') or []):
+            if not isinstance(e, dict):
+                continue
+            title = _dump(e.get('share_copy') or e.get('title') or '')
+            if any(k in title for k in _BL_EP_SKIP):
+                continue
+            ep = _dump(e.get('id'))
+            page = ('https://www.bilibili.com/bangumi/play/ep%s' % ep if ep.isdigit()
+                    else ('https://www.bilibili.com/video/%s' % _dump(e.get('bvid'))))
+            if page.endswith('/'):
+                continue
+            out.append(('第%d集' % (len(out) + 1), page))
+            if len(out) >= 400:
+                break
+    else:
+        d = _bl_json('/x/web-interface/view', {'bvid': kind[1]}, timeout=8)
+        pages = (d.get('data') or {}).get('pages') or []
+        for i, pg in enumerate(pages[:400]):
+            if not isinstance(pg, dict):
+                continue
+            part = _dump(pg.get('part') or '')
+            if any(k in part for k in _BL_EP_SKIP):
+                continue
+            out.append(('第%d集' % (len(out) + 1),
+                        'https://www.bilibili.com/video/%s?p=%d' % (kind[1], i + 1)))
+    return out
+
+
+def _bl_play(page):
+    """哔哩哔哩播放页 → 真流。B站自家 API 直接 412（要 cookie/buvid），
+    改走 4kzj parsesId=5：回 https://baidu.con/ 密文，解出来是 DASH 的 .mpd（1080，约 5Mbps）。"""
+    page = _dump(page)
+    if not page.startswith('http'):
+        return ''
+    hit = _BL_CACHE.get(page)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    got = _iq_stream(page)          # 复用爱奇艺那套解密（key=密文前 16 字符）
+    if got and not ('.mpd' in got or '.m3u8' in got):
+        got = ''
+    _BL_CACHE[page] = (time.time() + (900 if got else 20), got)
+    while len(_BL_CACHE) > 120:
+        _BL_CACHE.pop(next(iter(_BL_CACHE)), None)
+    return got
+
+
 def _ox_play(page):
     """平台播放页 → 真 m3u8（oxapi 默认档；优酷这类只有这个口认）"""
     page = _dump(page)
@@ -31584,6 +31726,8 @@ def _fix_platform_page(url):
         if any(h in _k4host for h in _K4_HOSTS):
             # 4K 直链源站 404：换出联通云/华为云/天翼云直链再交播放器
             return _k4_chain(url)
+        if 'bilibili.com/video/' in url or 'bilibili.com/bangumi/play/' in url:
+            return _bl_play(url)
         if 'youku.com/v_show/' in url or 'youku.com/alipay_video/' in url:
             got = _ox_play(url)
             if got:
@@ -32357,16 +32501,32 @@ class Spider(XMFCore):
                 except Exception:
                     _box['iq'] = []
 
+            def _job_bl():
+                """哔哩哔哩官方：B站接口（带 buvid3 cookie）找片 + 集表，
+                每集走 4kzj parsesId=5 出 1080 DASH 清单（约 5Mbps）"""
+                try:
+                    _e = _bl_eps(_box.get('name') or '', 10.0)
+                    if not _e or not _bl_play(_e[0][1]):
+                        _box['bl'] = []
+                        return
+                    _box['bl'] = [('哔哩哔哩官方·1080P',
+                                   '#'.join('%s$blweb:%s' % (lab, page) for lab, page in _e))]
+                except Exception:
+                    _box['bl'] = []
+
             _bd_thread = _th.Thread(target=_job_bd)
             _mg_thread = _th.Thread(target=_job_mg)
             _tx_thread = _th.Thread(target=_job_tx)
             _iq_thread = _th.Thread(target=_job_iq)
+            _bl_thread = _th.Thread(target=_job_bl)
             _iq_thread.daemon = True
             _iq_thread.start()
             _mg_thread.daemon = True
             _mg_thread.start()
             _tx_thread.daemon = True
             _tx_thread.start()
+            _bl_thread.daemon = True
+            _bl_thread.start()
             _bd_thread.daemon = True
             _bd_thread.start()
         except Exception:
@@ -32392,8 +32552,14 @@ class Spider(XMFCore):
                 _iq_thread.join(10.0)
         except Exception:
             pass
+        try:
+            if _bl_thread is not None:
+                _bl_thread.join(10.0)
+        except Exception:
+            pass
         lines = (list(_box.get('xf') or []) + list(_box.get('mg') or []) + list(_box.get('tx') or [])
-                 + list(_box.get('iq') or []) + list(_box.get('bd') or []))
+                 + list(_box.get('iq') or []) + list(_box.get('bl') or [])
+                 + list(_box.get('bd') or []))
         for vod in ((core or {}).get('list') or []):
             if not isinstance(vod, dict):
                 continue
@@ -32421,8 +32587,8 @@ class Spider(XMFCore):
                 ff.append(f)
                 uu.append(u)
             # 我们这条腾讯官方 m3u8 排到第一位，点开就能播
-            _mine = [(f, u) for f, u in zip(ff, uu) if ('txhd:' in u or 'iqweb:' in u)]
-            _keep = [(f, u) for f, u in zip(ff, uu) if not ('txhd:' in u or 'iqweb:' in u)]
+            _mine = [(f, u) for f, u in zip(ff, uu) if ('txhd:' in u or 'iqweb:' in u or 'blweb:' in u)]
+            _keep = [(f, u) for f, u in zip(ff, uu) if not ('txhd:' in u or 'iqweb:' in u or 'blweb:' in u)]
             vod['vod_play_from'] = '$$$'.join([f for f, _ in _mine + _keep])
             vod['vod_play_url'] = '$$$'.join([u for _, u in _mine + _keep])
         for vod in ((core or {}).get('list') or []):
@@ -32450,6 +32616,15 @@ class Spider(XMFCore):
             return False, 0.0    # 还是网页地址，等于没出流
         import requests as _rq
         try:
+            if '.mpd' in u:
+                m = _rq.get(u, headers={'User-Agent': 'okhttp/4.12.0'}, timeout=4.0)
+                body = m.text or ''
+                if m.status_code != 200 or '<MPD' not in body[:400]:
+                    return False, 0.0
+                mm = re.search(r'<BaseURL>([^<]+)</BaseURL>', body)
+                if not mm:
+                    return False, 0.0
+                u = mm.group(1).replace('&amp;', '&')
             if '.m3u8' in u:
                 # 有些源的 m3u8 是几百 KB 的超长清单（1 秒一段），1.5 秒拉不完会误判失效
                 m = _rq.get(u, headers={'User-Agent': 'Mozilla/5.0'}, timeout=4.0)
@@ -32547,6 +32722,12 @@ class Spider(XMFCore):
                 return {'parse': 0, 'jx': 0, 'url': u,
                         'header': {'User-Agent': 'okhttp/4.12.0'}}
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': '爱奇艺这集没解出流，换条线路试试'}
+        if s.startswith('blweb:'):
+            page = s.split(':', 1)[1]
+            u = _bl_play(page)
+            if u:
+                return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': 'okhttp/4.12.0'}}
+            return {'parse': 0, 'jx': 0, 'url': '', 'msg': 'B站这集没解出流，换条线路试试'}
         if s.startswith('bdpan|'):
             return _bd_play(s)
         if 'xmfyy.com' in s or s.startswith('/vodplay/'):
