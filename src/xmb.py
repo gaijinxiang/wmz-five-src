@@ -30902,6 +30902,134 @@ def _max_eps(detail):
         return 0
 
 
+# ---------------- 芒果TV 官方（搜索 + 集表 + oxapi 解析）----------------
+MG_SALT = 'xHAa3YZflWLogZUOzl'
+MG_SEARCH_API = 'https://mobileso.bz.mgtv.com/pc/search/v2'
+MG_EPS_API = 'https://pcweb.api.mgtv.com/episode/list'
+MG_OX_API = 'https://api.oxapi.cn/api/?key=cmVibpN3ufa3Q5Tpcd&url='
+MG_CDN_UA = 'Dalvik/2.1.0 (Linux; U; Android 12)'
+_MG_CACHE = {}
+_MG_OX_CACHE = {}
+
+
+def _mg_md5_sign(params):
+    import hashlib
+    parts = [(k, v) for k, v in params.items() if k != 'signature' and str(v).strip()]
+    parts.sort(key=lambda kv: kv[0])
+    src = '&'.join('%s=%s' % (urllib.parse.quote(str(k), safe=':/?#[]@!$&\'()*+,;=-_.~%'),
+                              urllib.parse.quote(str(v), safe=':/?#[]@!$&\'()*+,;=-_.~%'))
+                  for k, v in parts)
+    return hashlib.md5((MG_SALT + src + MG_SALT).encode('utf-8')).hexdigest()
+
+
+def _mg_json(url, ref='https://www.mgtv.com/', timeout=6):
+    import requests as _rq
+    try:
+        r = _rq.get(url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': ref}, timeout=timeout)
+        if r.status_code != 200:
+            return {}
+        return r.json()
+    except Exception:
+        return {}
+
+
+def _mg_norm(x):
+    return re.sub(r'[^0-9a-z\u4e00-\u9fff]', '', str(x or '')).lower()
+
+
+def _mg_search(name, budget=6.0):
+    """芒果搜索 → [(标题, cid, vid)]，只认芒果自己的片"""
+    tm = time.gmtime()
+    params = {'allowedRC': '1', 'src': 'mgtv', 'did': '3000000000',
+              'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', tm), 'signVersion': '1',
+              'signNonce': '%032x' % random.getrandbits(128), 'q': name, 'pn': '1', 'pc': '10',
+              'uid': '', 'corr': '1', '_support': '10000000'}
+    params['signature'] = _mg_md5_sign(params)
+    q = '&'.join('%s=%s' % (k, urllib.parse.quote(str(v), safe='')) for k, v in params.items())
+    d = _mg_json(MG_SEARCH_API + '?' + q, timeout=budget)
+    out = []
+    for e in ((d.get('data') or {}).get('contents') or []):
+        b = e.get('data') or {}
+        for cand in (b.get('yearList') or [b]):
+            if not isinstance(cand, dict):
+                continue
+            u = _dump(cand.get('url') or b.get('url'))
+            m = re.search(r'/b/(\d+)/(\d+)\.html', u)
+            if not m:
+                continue
+            t = re.sub(r'<[^>]+>', '', _dump(cand.get('hitTitle') or cand.get('title') or b.get('hitTitle') or ''))
+            out.append((t.strip(), m.group(1), m.group(2)))
+    return out
+
+
+def _mg_eps(name, budget=8.0):
+    """芒果：按片名取正片集表 [(集名, 播放页)]，只认标题匹配的条目"""
+    key = _bd_norm(name)
+    hit = _MG_CACHE.get(key)
+    if hit and time.time() - hit[0] < 900:
+        return hit[1]
+    want = _mg_norm(name)
+    pick = None
+    for t, cid, vid in _mg_search(name, budget):
+        tt = _mg_norm(t)
+        if not tt:
+            continue
+        if tt == want or tt.startswith(want) or want.startswith(tt):
+            pick = (t, cid, vid)
+            break
+    if not pick:
+        return []
+    vid = pick[2]
+    rows = []
+    for page in range(1, 5):
+        d = _mg_json('%s?page=%d&size=50&video_id=%s&allowedRC=1&_support=10000000' % (MG_EPS_API, page, vid))
+        lst = ((d.get('data') or {}) if isinstance(d, dict) else {}).get('list') or []
+        for e in lst:
+            m = re.search(r'/b/(\d+)/(\d+)\.html', _dump(e.get('url')))
+            if not m:
+                continue
+            lab = re.sub(r'<[^>]+>', '', _dump(e.get('t4') or e.get('t3') or e.get('title') or '正片')).strip()
+            if any(k in lab for k in ('预告', '花絮', '特辑', '片花', '抢先', '彩蛋', '会员专享')):
+                continue
+            rows.append((lab or '正片', 'https://www.mgtv.com/b/%s/%s.html' % (m.group(1), m.group(2))))
+        if not lst or len(lst) < 50:
+            break
+    v = rows[:400]
+    if v:
+        _MG_CACHE[key] = (time.time(), v)
+    return v
+
+
+def _mg_play(page, fourk=False):
+    """芒果播放页 → 直链（oxapi；fourk=True 要 4K 档）"""
+    page = _dump(page)
+    if not page.startswith('http'):
+        return ''
+    ck = ('4k|' if fourk else 'hd|') + page
+    hit = _MG_OX_CACHE.get(ck)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    import requests as _rq
+    url = ''
+    try:
+        r = _rq.get(MG_OX_API + urllib.parse.quote(page, safe='') + ('&type=4k' if fourk else ''),
+                    headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.mgtv.com/'}, timeout=8)
+        txt = r.text or ''
+        if '解析成功' in txt[:300] or '"url"' in txt:
+            m = re.search(r'"url"\s*:\s*"([^"]+)"', txt)
+            if m:
+                url = m.group(1).replace('\\/', '/')
+                if fourk and 'tx1080' in url.lower():
+                    url = ''
+    except Exception:
+        url = ''
+    if url:
+        _MG_OX_CACHE[ck] = (time.time() + 1200, url)
+        while len(_MG_OX_CACHE) > 400:
+            _MG_OX_CACHE.pop(next(iter(_MG_OX_CACHE)), None)
+    return url
+
+
 # ---------------- 双星（双芯 / star2.cn）--------------------------------
 _SX_HOSTS = ('https://1.star2.cn', 'https://2.star2.cn', 'https://star2.cn')
 _SX_CACHE = {}
@@ -31603,11 +31731,37 @@ class Spider(XMFCore):
             core = {'list': []}
         _sp_thread = None
         _bd_thread = None
+        _mg_thread = None
         try:
             _one0 = ((core or {}).get('list') or [None])[0]
             _box['name'] = str((_one0 or {}).get('vod_name') or '')
             _box['epn'] = _max_eps(core)
+
+            def _job_mg():
+                """芒果官方：有这片就挂一条 4K（解析站给不出 4K 就挂高清）"""
+                try:
+                    _nm = _box.get('name') or ''
+                    _e = _mg_eps(_nm, 7.0)
+                    if not _e:
+                        _box['mg'] = []
+                        return
+                    _u = _mg_play(_e[0][1], True)
+                    _nm2 = '芒果TV·4K'
+                    if not _u:
+                        _u = _mg_play(_e[0][1], False)
+                        _nm2 = '芒果TV'
+                    if not _u:
+                        _box['mg'] = []
+                        return
+                    _tok = '#'.join('%s$mgx4:%s' % (lab, page) for lab, page in _e)
+                    _box['mg'] = [(_nm2, _tok)]
+                except Exception:
+                    _box['mg'] = []
+
             _bd_thread = _th.Thread(target=_job_bd)
+            _mg_thread = _th.Thread(target=_job_mg)
+            _mg_thread.daemon = True
+            _mg_thread.start()
             _bd_thread.daemon = True
             _bd_thread.start()
         except Exception:
@@ -31618,7 +31772,12 @@ class Spider(XMFCore):
                 _bd_thread.join(self.BD_BUDGET)
         except Exception:
             pass
-        lines = list(_box.get('xf') or []) + list(_box.get('bd') or [])
+        try:
+            if _mg_thread is not None:
+                _mg_thread.join(8.0)
+        except Exception:
+            pass
+        lines = list(_box.get('xf') or []) + list(_box.get('mg') or []) + list(_box.get('bd') or [])
         for vod in ((core or {}).get('list') or []):
             if not isinstance(vod, dict):
                 continue
@@ -31733,6 +31892,12 @@ class Spider(XMFCore):
 
     def playerContent(self, flag, id, vipFlags=None):
         s = str(id or '')
+        if s.startswith('mgx4:'):
+            page = s.split(':', 1)[1]
+            u = _mg_play(page, True) or _mg_play(page, False)
+            if u:
+                return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': MG_CDN_UA}}
+            return {'parse': 0, 'jx': 0, 'url': '', 'msg': '芒果这集没解析出流，换条线路试试'}
         if s.startswith('bdpan|'):
             return _bd_play(s)
         if 'xmfyy.com' in s or s.startswith('/vodplay/'):
