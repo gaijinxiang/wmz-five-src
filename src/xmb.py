@@ -3828,7 +3828,7 @@ try:
                         return tag, real, name or flag
                 return 'yt', raw, text(flag)
 
-            def playerContent(self, flag, id, vipFlags=None):
+        def playerContent(self, flag, id, vipFlags=None):
                 raw = id[0] if isinstance(id, (list, tuple)) and id else id
                 tag, real, name = self._decode(raw, flag)
                 empty = {'parse': 0, 'url': '', 'header': {'User-Agent': UA_WEB}}
@@ -31438,6 +31438,50 @@ def _iq_local_play(page):
     return _iq_serve(body)
 
 
+def _tok_page(tok):
+    """从稀饭的线路 token 里抠出原始平台播放页（影探接口挂了也能自救）"""
+    import base64 as _b64
+    tok = _dump(tok)
+    if len(tok) < 8:
+        return ''
+    try:
+        raw = _b64.urlsafe_b64decode(tok[2:] + '=' * (-len(tok[2:]) % 4)).decode('utf-8', 'ignore')
+    except Exception:
+        return ''
+    for part in raw.split('\x1f'):
+        for cand in (part, part.split('|')[-1]):
+            cand = cand.strip()
+            if cand.startswith('http'):
+                return cand
+            if len(cand) < 12:
+                continue
+            try:
+                d2 = _b64.urlsafe_b64decode(cand + '=' * (-len(cand) % 4)).decode('utf-8', 'ignore')
+            except Exception:
+                continue
+            hit = re.search(r'https?://[^\x00-\x1f\s]+', d2)
+            if hit:
+                return hit.group(0)
+    return ''
+
+
+def _fix_platform_page(url):
+    """页地址 → 真流：爱奇艺 / 腾讯 / 芒果 各走已接好的解析口"""
+    url = _dump(url)
+    if not url.startswith('http'):
+        return ''
+    try:
+        if 'iqiyi.com/v_' in url:
+            return _iq_local_play(url)
+        if 'v.qq.com/x/cover/' in url:
+            return _tx_play(url)
+        if 'mgtv.com/b/' in url:
+            return _mg_play(url, True) or _mg_play(url, False)
+    except Exception:
+        return ''
+    return ''
+
+
 # ---------------- 双星（双芯 / star2.cn）--------------------------------
 _SX_HOSTS = ('https://1.star2.cn', 'https://2.star2.cn', 'https://star2.cn')
 _SX_CACHE = {}
@@ -32386,10 +32430,19 @@ class Spider(XMFCore):
             return _bd_play(s)
         if 'xmfyy.com' in s or s.startswith('/vodplay/'):
             return XMFCore.playerContent(self, flag, id, vipFlags)
-        if self._xf is not None and (s.startswith('k1') or s.startswith('k2')):
-            return self._xf.playerContent(flag, s, vipFlags)
         if self._xf is not None and s:
-            return self._xf.playerContent(flag, s, vipFlags)
+            got = self._xf.playerContent(flag, s, vipFlags)
+            # 影探/网页类线路常常只回一个“平台播放页”，播放器拿到网页必黑屏：
+            # 这里按域名就地换成真流（爱奇艺走官方集页+本地清单，腾讯走 oxapi，芒果走 oxapi）
+            u0 = _dump((got or {}).get('url') if isinstance(got, dict) else '')
+            fixed = _fix_platform_page(u0)
+            if not fixed:
+                # 影探接口抖/挂时它连页面都不回，这时从 token 里直接抠平台页自救
+                fixed = _fix_platform_page(_tok_page(s))
+            if fixed:
+                return {'parse': 0, 'jx': 0, 'url': fixed,
+                        'header': {'User-Agent': 'okhttp/4.12.0'}}
+            return got
         return XMFCore.playerContent(self, flag, id, vipFlags)
 
     def localProxy(self, param):
