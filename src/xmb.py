@@ -27767,7 +27767,7 @@ JSON 线路写法（配置里只挂这一条聚合线路即可）：
     pn_SITES = [
         {"id": "木偶",  "name": "木偶", "type": "webshare",
          "site": ["https://123.666291.xyz", "https://666.666291.xyz",
-                  "https://www.muou.site", "https://www.muou.asia"]},
+                  "https://333.333291.xyz", "https://www.muou.site"]},
          {"id": "玩偶",  "name": "玩偶", "type": "wogg",
          "site": ["https://www.wogg.net", "https://wogg.xxooo.cf", "https://woggpan.xxooo.cf"]},
         {"id": "多多",  "name": "多多", "type": "webshare",
@@ -30828,7 +30828,7 @@ class BaiduDrive:
 SITES = [
     {"id": "木偶",  "name": "木偶", "type": "webshare",
      "site": ["https://123.666291.xyz", "https://666.666291.xyz",
-              "https://www.muou.site", "https://www.muou.asia"]},
+              "https://333.333291.xyz", "https://www.muou.site"]},
     {"id": "快映",  "name": "快映", "type": "webshare",
      "site": ["http://xsayang.fun", "http://38.76.197.172:12521"]},
 ]
@@ -30887,7 +30887,7 @@ FILTERS_WOGG = {
 
 
 _BD_SITES = ("http://xsayang.fun", "http://38.76.197.172:12521",
-             "https://123.666291.xyz", "https://666.666291.xyz", "https://www.muou.site")
+             "https://333.333291.xyz", "https://123.666291.xyz", "https://www.muou.site")
 def _max_eps(detail):
     """从官方详情里取最大集数"""
     try:
@@ -32081,7 +32081,7 @@ def _nd_baidu_shares(name, budget=6.0):
         return hit[1]
     import urllib.request as _ur
     MUOU = ("https://123.666291.xyz", "https://666.666291.xyz",
-            "https://www.muou.site", "https://www.muou.asia")
+            "https://333.333291.xyz", "https://www.muou.site")
     WOYOU = ("https://www.wogg.link", "https://www.wogg.net",
              "https://woggpan.600200.xyz")
     out = []
