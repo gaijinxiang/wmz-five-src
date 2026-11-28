@@ -2,7 +2,7 @@
   "sites": [
     {
       "key": "xmb_xf",
-      "name": "🐝小蜜蜂｜稀饭线路",
+      "name": "🐝小蜜蜂｜稀饭线路 v1128C",
       "type": 3,
       "api": "https://gh-proxy.com/https://raw.githubusercontent.com/gaijinxiang/wmz-five-src/main/src/xmb.py",
       "searchable": 1,
@@ -13,7 +13,7 @@
     },
     {
       "key": "xmb_xf_jsd",
-      "name": "🐝小蜜蜂｜稀饭(备用)",
+      "name": "🐝小蜜蜂｜稀饭(备用) v1128C",
       "type": 3,
       "api": "https://cdn.jsdelivr.net/gh/gaijinxiang/wmz-five-src@main/src/xmb.py",
       "searchable": 1,
