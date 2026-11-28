@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import base64, json, re, time, random, urllib.request
+import base64, hashlib, json, re, time, random, urllib.request
 from urllib.parse import urlencode, quote
 
 try:
