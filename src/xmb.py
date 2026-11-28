@@ -32447,6 +32447,265 @@ def _bd_play(tok):
 #    （影探 移动云/联通云/天翼云、小山·4K、咕噜、橘汁、四源、河豚、天堂…）
 #  - 播放按地址分流：小蜜蜂站内 /vodplay/ 走原逻辑，其余走稀饭解析链路
 # ======================================================================
+import re, json, time, zlib, threading
+import requests
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+
+def _xml(items, chat_id="x"):
+    esc = lambda t: (str(t).replace("&", "&amp;").replace("<", "&lt;")
+                     .replace(">", "&gt;").replace('"', "&quot;"))
+    body = ['<?xml version="1.0" encoding="UTF-8"?>',
+            '<i><chatserver>dmx</chatserver><chatid>%s</chatid><mission>0</mission>'
+            '<maxlimit>99999</maxlimit><state>0</state><real_name>0</real_name>'
+            '<source>k-v</source>' % esc(chat_id)]
+    for sec, txt in items:
+        body.append('<d p="%.2f,1,25,16777215,0,0,0,0">%s</d>' % (float(sec), esc(txt)))
+    body.append('</i>')
+    return "".join(body).encode("utf-8")
+
+
+def tx(vid):
+    h = {'User-Agent': UA, 'Referer': 'https://v.qq.com/'}
+    j = requests.get('https://dm.video.qq.com/barrage/base/' + vid, headers=h, timeout=8).json()
+    segs = [v.get('segment_name') for v in (j.get('segment_index') or {}).values()]
+    segs = [s for s in segs if s][:16]
+    rows = []
+    lock = threading.Lock()
+
+    def one(sn):
+        try:
+            d = requests.get('https://dm.video.qq.com/barrage/segment/%s/%s' % (vid, sn),
+                             headers=h, timeout=8).json()
+            got = []
+            for it in (d.get('barrage_list') or []):
+                try:
+                    sec = float(it.get('time_offset') or 0) / 1000.0
+                except Exception:
+                    continue
+                txt = (it.get('content') or '').strip()
+                if txt:
+                    got.append((sec, txt))
+            with lock:
+                rows.extend(got)
+        except Exception:
+            pass
+    ts = [threading.Thread(target=one, args=(s,), daemon=True) for s in segs]
+    [t.start() for t in ts]
+    [t.join(6) for t in ts]
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+def _title_norm(s):
+    return re.sub(r'[^0-9a-zA-Z\u4e00-\u9fa5]', '', str(s or '')).lower()
+
+
+def iq(name, ep):
+    h = {'User-Agent': UA, 'Referer': 'https://www.iqiyi.com/'}
+    ep = max(1, int(ep or 1))
+    r = requests.get('https://mesh.if.iqiyi.com/portal/lw/search/homePageV3',
+                     params={'key': name, 'pageNum': 1}, headers=h, timeout=10)
+    data = r.json()
+    cands = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            ai = o.get('albumInfo')
+            if isinstance(ai, dict) and ai.get('qipuId'):
+                cands.append((str(ai.get('title') or ''), str(ai.get('qipuId'))))
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(data)
+    if not cands:
+        return []
+    key = _title_norm(name)
+    best = None
+    for t, q in cands:
+        nt = _title_norm(t)
+        score = 2 if nt and (nt == key) else (1 if nt and (key in nt or nt in key) else 0)
+        if best is None or score > best[0]:
+            best = (score, q)
+    qid = best[1]
+    av = requests.get('https://pcw-api.iqiyi.com/albums/album/avlistinfo',
+                      params={'aid': qid, 'page': 1, 'size': max(ep, 3)},
+                      headers=h, timeout=10).json()
+    dd = av.get('data') or {}
+    eps = dd.get('epsodelist') or dd.get('eps') or []
+    if not eps:
+        return []
+    tv = str(eps[min(ep, len(eps)) - 1].get('tvId') or '')
+    if not tv:
+        return []
+    rows = []
+    pages = []
+    _lock = threading.Lock()
+
+    def one_page(i):
+        u = 'https://cmts.iqiyi.com/bullet/%s/%s/%s_300_%d.z' % (tv[-4:-2], tv[-2:], tv, i)
+        try:
+            rr = requests.get(u, headers=h, timeout=8)
+            if rr.status_code != 200 or not rr.content:
+                return
+            raw = zlib.decompress(bytearray(rr.content), 15 + 32).decode('utf-8', 'replace')
+        except Exception:
+            return
+        with _lock:
+            pages.append(raw)
+
+    _ts = [threading.Thread(target=one_page, args=(i,), daemon=True) for i in range(1, 13)]
+    [_t.start() for _t in _ts]
+    [_t.join(8) for _t in _ts]
+    for raw in pages:
+        for block in re.findall(r'<bulletInfo>(.*?)</bulletInfo>', raw, re.S):
+            m1 = re.search(r'<content>(.*?)</content>', block, re.S)
+            m2 = re.search(r'<showTime>(.*?)</showTime>', block, re.S)
+            if not m1 or not m2:
+                continue
+            try:
+                sec = float(m2.group(1))
+            except Exception:
+                continue
+            txt = re.sub(r'<[^>]+>', '', m1.group(1)).strip()
+            if txt:
+                rows.append((sec, txt))
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+
+
+# ===================== 官方弹幕（腾讯 / 爱奇艺 / B站）→ 本机 XML 服务 =====================
+_DMX_META = {}      # 播放页 → {'name': 剧名, 'ep': 集号}
+_DMX_DONE = {}      # key → xml bytes
+_DMX_JOB = {}       # key → 取数函数
+_DMX_FAIL = {}      # key → 上次取空的时间
+_DMX_PORT = [0]
+_DMX_TLS = threading.Lock()
+
+
+def _dmx_start(key, fn):
+    _DMX_JOB[key] = fn
+
+    def run():
+        rows = []
+        for i in range(3):          # 上游偶发空响应，重试三次再判死
+            try:
+                rows = fn() or []
+            except Exception:
+                rows = []
+            if rows:
+                break
+            time.sleep(1.2)
+        if not rows:
+            _DMX_FAIL[key] = time.time()
+        try:
+            _DMX_DONE[key] = _xml(rows, key) if rows else b''
+        except Exception:
+            _DMX_DONE[key] = b''
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except Exception:
+        pass
+
+
+def _dmx_get(key):
+    t = time.time()
+    while time.time() - t < 25:
+        if key in _DMX_DONE:
+            xml = _DMX_DONE[key]
+            if xml:
+                return xml
+            # 上次空：隔一分钟允许再试一次
+            if time.time() - float(_DMX_FAIL.get(key) or 0) < 60:
+                return None
+            _DMX_DONE.pop(key, None)
+            _dmx_start(key, _DMX_JOB[key])
+        if key not in _DMX_JOB:
+            return None
+        time.sleep(0.2)
+    return None
+
+
+def _dmx_serve():
+    if _DMX_PORT[0]:
+        return _DMX_PORT[0]
+    with _DMX_TLS:
+        if _DMX_PORT[0]:
+            return _DMX_PORT[0]
+        try:
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+            class H(BaseHTTPRequestHandler):
+                def log_message(self, *a):
+                    pass
+
+                def do_GET(self):
+                    key = self.path.split('/dmx/', 1)[-1].split('.xml')[0]
+                    xml = _dmx_get(key)
+                    if not xml:
+                        self.send_response(404)
+                        self.send_header('Content-Length', '0')
+                        self.end_headers()
+                        return
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/xml; charset=utf-8')
+                    self.send_header('Content-Length', str(len(xml)))
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(xml)
+
+            srv = ThreadingHTTPServer(('127.0.0.1', 0), H)
+            _DMX_PORT[0] = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+        except Exception:
+            _DMX_PORT[0] = 0
+        return _DMX_PORT[0]
+
+
+def _dmx_ep(label):
+    nums = re.findall(r'\d+', str(label or ''))
+    try:
+        return max(1, int(nums[0])) if nums else 1
+    except Exception:
+        return 1
+
+
+def _dmx_attach(kind, page):
+    """给播放结果挂一条官方弹幕（壳读 playerContent.danmaku 里的 url 列表）。"""
+    try:
+        port = _dmx_serve()
+        if not port:
+            return {}
+        meta = _DMX_META.get(page) or {}
+        if kind == 'tx':
+            base = page.rstrip('/').split('/')[-1]
+            vid = base.split('.')[0]
+            if not re.match(r'^[a-z0-9]{8,}$', vid):
+                return {}
+            key = 'tx_' + vid
+            _dmx_start(key, lambda: tx(vid))
+            label = '腾讯视频官方弹幕'
+        elif kind == 'iq':
+            name = meta.get('name') or ''
+            ep = _dmx_ep(meta.get('ep'))
+            if not name:
+                return {}
+            key = 'iq_%08x_%d' % (zlib.crc32(name.encode('utf-8')) & 0xffffffff, ep)
+            _dmx_start(key, lambda: iq(name, ep))
+            label = '爱奇艺官方弹幕'
+        else:
+            return {}
+        return {'danmaku': [{'name': label,
+                             'url': 'http://127.0.0.1:%d/dmx/%s.xml' % (port, key)}]}
+    except Exception:
+        return {}
+
 class Spider(XMFCore):
     XF_BUDGET = 7.0          # 稀饭线路最多等这么久，超时只上小蜜蜂自己的线
     BD_BUDGET = 12.0          # 百度网盘线（快映/木偶）最多等这么久
@@ -32921,6 +33180,18 @@ class Spider(XMFCore):
                              or (_yk_ok and f.startswith('优酷官方·1080P')))]
             vod['vod_play_from'] = '$$$'.join([f for f, _ in _mine + _keep])
             vod['vod_play_url'] = '$$$'.join([u for _, u in _mine + _keep])
+            try:      # 记下每个播放页对应的剧名/集号，播放时按页取官方弹幕
+                _nm_all = str(vod.get('vod_name') or '')
+                for _u2 in (vod['vod_play_url'] or '').split('$$$'):
+                    for _it in (_u2 or '').split('#'):
+                        if '$' not in _it:
+                            continue
+                        _lab, _tok = _it.split('$', 1)
+                        for _pfx in ('txhd:', 'iqweb:'):
+                            if _tok.startswith(_pfx):
+                                _DMX_META[_tok[len(_pfx):]] = {'name': _nm_all, 'ep': _lab}
+            except Exception:
+                pass
         for vod in ((core or {}).get('list') or []):
             if isinstance(vod, dict):
                 try:
@@ -33043,14 +33314,18 @@ class Spider(XMFCore):
             page = s.split(':', 1)[1]
             u = _tx_play(page)
             if u:
-                return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': 'okhttp/4.12.0'}}
+                out = {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': 'okhttp/4.12.0'}}
+                out.update(_dmx_attach('tx', page))
+                return out
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': '腾讯这集没解析出流，换条线路试试'}
         if s.startswith('iqweb:'):
             page = s.split(':', 1)[1]
             u = _iq_local_play(page)
             if u:
-                return {'parse': 0, 'jx': 0, 'url': u,
-                        'header': {'User-Agent': 'okhttp/4.12.0'}}
+                out = {'parse': 0, 'jx': 0, 'url': u,
+                       'header': {'User-Agent': 'okhttp/4.12.0'}}
+                out.update(_dmx_attach('iq', page))
+                return out
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': '爱奇艺这集没解出流，换条线路试试'}
         if s.startswith('blweb:'):
             page = s.split(':', 1)[1]
@@ -33063,7 +33338,8 @@ class Spider(XMFCore):
                 _cid = _BL_DM.get(page) or 0
                 if _cid:
                     # 原链配官方弹幕（B站官方 XML，免登可取）
-                    out['danmaku'] = 'https://comment.bilibili.com/%d.xml' % _cid
+                    out['danmaku'] = [{'name': '哔哩哔哩官方弹幕',
+                                       'url': 'https://comment.bilibili.com/%d.xml' % _cid}]
                 return out
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': 'B站这集没解出流，换条线路试试'}
         if s.startswith('muouk:'):
