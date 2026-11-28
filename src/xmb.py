@@ -31465,6 +31465,35 @@ def _tok_page(tok):
     return ''
 
 
+_OX_CACHE = {}
+
+
+def _ox_play(page):
+    """平台播放页 → 真 m3u8（oxapi 默认档；优酷这类只有这个口认）"""
+    page = _dump(page)
+    if not page.startswith('http'):
+        return ''
+    hit = _OX_CACHE.get(page)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    import requests as _rq
+    url = ''
+    try:
+        r = _rq.get(MG_OX_API + urllib.parse.quote(page, safe=''),
+                    headers={'User-Agent': 'okhttp/4.12.0', 'Referer': 'https://www.youku.com/'}, timeout=9)
+        txt = r.text or ''
+        m = re.search(r'"url"\s*:\s*"([^"]+)"', txt)
+        if m and '傻得' not in txt[:200]:
+            url = m.group(1).replace('\\/', '/')
+    except Exception:
+        url = ''
+    if url:
+        _OX_CACHE[page] = (time.time() + 120, url)
+        while len(_OX_CACHE) > 200:
+            _OX_CACHE.pop(next(iter(_OX_CACHE)), None)
+    return url
+
+
 def _fix_platform_page(url):
     """页地址 → 真流：爱奇艺 / 腾讯 / 芒果 各走已接好的解析口"""
     url = _dump(url)
@@ -31477,6 +31506,12 @@ def _fix_platform_page(url):
             return _tx_play(url)
         if 'mgtv.com/b/' in url:
             return _mg_play(url, True) or _mg_play(url, False)
+        if 'youku.com/v_show/' in url or 'youku.com/alipay_video/' in url:
+            got = _ox_play(url)
+            if got:
+                return got
+            # oxapi 被限流时退回 4kzj 解密 + 本地清单代理
+            return _iq_local_play(url)
     except Exception:
         return ''
     return ''
