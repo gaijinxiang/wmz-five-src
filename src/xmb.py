@@ -32691,17 +32691,8 @@ class Spider(XMFCore):
                     if not _sh:
                         return
                     _e5, _c5 = _muou_eps(_sh)
-                    if not _e5:
-                        return
-                    # 夸克游客只放行图片（视频直链要求登录），拿不到直链就不上线，
-                    # 免得面板上摆一条假有效的「失效」线
-                    _first = _e5.split('#')[0].split('$', 1)[1]
-                    try:
-                        if not ((self.playerContent('', _first, None) or {}).get('url')):
-                            return
-                    except Exception:
-                        return
-                    _box['muou'] = ('木偶·网盘·夸克4K·%d集' % _c5, _e5)
+                    if _e5:
+                        _box['muou'] = ('木偶·网盘·夸克4K·%d集' % _c5, _e5)
                 except Exception:
                     pass
 
@@ -32965,7 +32956,8 @@ class Spider(XMFCore):
             p3 = s.split(':', 1)[1].split('|')
             if len(p3) >= 3:
                 try:
-                    q = pn_QuarkDrive('')
+                    _ck = _dump((getattr(self, '_ext', {}) or {}).get('quark_cookie'))
+                    q = pn_QuarkDrive(_ck)
                     # 新实例没有 stoken 缓存，download 接口要先 share_token 把会话跑起来
                     try:
                         q.share_token(p3[0])
