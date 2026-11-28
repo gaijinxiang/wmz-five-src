@@ -27766,8 +27766,7 @@ JSON 线路写法（配置里只挂这一条聚合线路即可）：
     # ---------------------------------------------------------------------------
     pn_SITES = [
         {"id": "木偶",  "name": "木偶", "type": "webshare",
-         "site": ["https://123.666291.xyz", "https://666.666291.xyz",
-                  "https://333.333291.xyz", "https://www.muou.site"]},
+         "site": ["https://333.333291.xyz", "https://www.muou.site"]},
          {"id": "玩偶",  "name": "玩偶", "type": "wogg",
          "site": ["https://www.wogg.net", "https://wogg.xxooo.cf", "https://woggpan.xxooo.cf"]},
         {"id": "多多",  "name": "多多", "type": "webshare",
@@ -29073,6 +29072,16 @@ JSON 线路写法（配置里只挂这一条聚合线路即可）：
                                f"+{it['size']}+{quote(it['download_url'], safe='')}")
                         eps.append(f"{self._ep_display(title, it['file_name'], i + 1, it.get('size'))}${pid}")
                     p123_lines.append((len(eps), "#".join(eps)))
+            # 百度网盘（bdpan 令牌，播放走 _bd_play；手机端百度分享页可读，机房 IP 会被挡）
+            bd_lines = []
+            _bdeps = globals().get('_bd_eps')
+            for link in pans.get("百度", []):
+                try:
+                    e = _bdeps(link, 14.0) if _bdeps else ""
+                except Exception:
+                    e = ""
+                if e:
+                    bd_lines.append((len(e.split("#")), e))
             play_from, play_url = [], []
             # 集数多的线路排前面（剧情更全），线路名带集数
             for i, (cnt, urls) in enumerate(sorted(uc_lines, key=lambda x: -x[0])):
@@ -29083,6 +29092,9 @@ JSON 线路写法（配置里只挂这一条聚合线路即可）：
                 play_url.append(urls)
             for i, (cnt, urls) in enumerate(sorted(p123_lines, key=lambda x: -x[0])):
                 play_from.append(f"123云盘{cnt}集#{i + 1}")
+                play_url.append(urls)
+            for i, (cnt, urls) in enumerate(sorted(bd_lines, key=lambda x: -x[0])):
+                play_from.append(f"百度网盘{cnt}集#{i + 1}")
                 play_url.append(urls)
             # 百度/迅雷/天翼/阿里/移动 均需登录转存，不支持免登直链，直接不出线路
             if not play_from:
@@ -30827,8 +30839,7 @@ class BaiduDrive:
 # ---------------------------------------------------------------------------
 SITES = [
     {"id": "木偶",  "name": "木偶", "type": "webshare",
-     "site": ["https://123.666291.xyz", "https://666.666291.xyz",
-              "https://333.333291.xyz", "https://www.muou.site"]},
+     "site": ["https://333.333291.xyz", "https://www.muou.site"]},
     {"id": "快映",  "name": "快映", "type": "webshare",
      "site": ["http://xsayang.fun", "http://38.76.197.172:12521"]},
 ]
