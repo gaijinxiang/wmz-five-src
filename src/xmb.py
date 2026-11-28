@@ -32326,7 +32326,8 @@ class Spider(XMFCore):
             # 用户要求：站点的「普通线路一」(-jsm3u8-)、「自建线路」(-covip-) 不要了
             # 「腾讯官方线路」(-qq-) 用我们自己的官方 m3u8 顶替，站点那条也摘掉
             _kk = [(f, u) for f, u in zip(ff, uu)
-                   if not ('-jsm3u8-' in u or '-covip-' in u or ('-qq-' in u and '腾讯' in f))]
+                   if not ('-jsm3u8-' in u or '-covip-' in u or ('-qq-' in u and '腾讯' in f)
+                           or ('-qiyi-' in u and '1080' not in f))]
             ff = [f for f, _ in _kk]
             uu = [u for _, u in _kk]
             _cached_bd = _BD_LINE_CACHE.get(_bd_norm(str(vod.get('vod_name') or '')))
