@@ -32582,6 +32582,7 @@ def iq(name, ep):
 
 # ===================== 官方弹幕（腾讯 / 爱奇艺 / B站）→ 本机 XML 服务 =====================
 _DMX_META = {}      # 播放页 → {'name': 剧名, 'ep': 集号}
+_DM3_TOK = {}       # 播放 token → {'name': 剧名, 'ep': 集号}（所有线路都记）
 _DMX_DONE = {}      # key → xml bytes
 _DMX_JOB = {}       # key → 取数函数
 _DMX_FAIL = {}      # key → 上次取空的时间
@@ -32666,6 +32667,137 @@ def _dmx_serve():
         except Exception:
             _DMX_PORT[0] = 0
         return _DMX_PORT[0]
+
+
+# ============== 第三方弹幕源（LogVar / 弹弹play 协议，直接给 XML 地址） ==============
+_DMX3_BASE = 'https://dm.66608880.xyz/87654321'
+_DMX3_CACHE = {}
+_DMX3_TLS = threading.Lock()
+
+
+_DM3_SERIES = {}     # 归一剧名 → {'by_ep': {n: id}, 'tags': {tag: {n: id}}, 'ts': time}
+_DM3_TLS = threading.Lock()
+
+
+def _dm3_names(name):
+    raw = str(name or '').strip()
+    out = [raw] if raw else []
+    n2 = re.sub(r'[【】\[\]()（）]', ' ', raw)
+    n2 = re.sub(r'(?i)(4k|8k|hdr|60fps|50fps|高码|web-dl|蓝光|国语|中字|'
+                r'全\s*\d+\s*集|更至\s*\d+\s*集|更新至\s*\d+\s*集|\d+\s*集全)', ' ', n2)
+    n2 = re.sub(r'\s+', ' ', n2).strip(' -')
+    if n2 and n2 not in out:
+        out.append(n2)
+    core = re.split(r'第[一二三四五六七八九十\d]+季|\d{4}|[（(]', n2)[0].strip(' -')
+    if core and core not in out:
+        out.append(core)
+    return out
+
+
+def _dm3_tag_of(label):
+    m = re.search(r'【([^】]+)】|\[([^\]]+)\]', str(label or ''))
+    if not m:
+        return ''
+    return (m.group(1) or m.group(2) or '').strip()
+
+
+def _dm3_build(name):
+    """整剧一次搜索：把每集的 episodeId 按集号+来源标签建表（后续播放直接拼地址，不阻塞）。"""
+    key = _title_norm(name)
+    if not key:
+        return
+    hh = {'User-Agent': UA, 'Accept': 'application/json', 'Referer': 'https://www.dandanplay.com/'}
+    by_ep, by_tag = {}, {}
+    for nm in _dm3_names(name):
+        try:
+            js = requests.get(_DMX3_BASE + '/api/v2/search/episodes',
+                              params={'anime': nm}, headers=hh, timeout=25).json()
+        except Exception:
+            continue
+        animes = js.get('animes') or []
+        if not animes:
+            continue
+        kn = _title_norm(nm)
+        best = None
+        for a in animes:
+            tn = _title_norm(a.get('animeTitle'))
+            sc = 3 if (kn and tn == kn) else (2 if kn and (kn in tn or tn in kn) else 0)
+            if best is None or sc > best[0]:
+                best = (sc, a)
+        if not best or best[0] <= 0:
+            continue
+        for e in (best[1].get('episodes') or []):
+            eid = e.get('episodeId')
+            if not eid:
+                continue
+            n = _dmx_ep(e.get('episodeTitle'))
+            tag = (_dm3_tag_of(e.get('episodeTitle')) or '')
+            by_ep.setdefault(n, eid)
+            if tag:
+                by_tag.setdefault(tag.lower(), {}).setdefault(n, eid)
+        break
+    if by_ep:
+        _DM3_SERIES[key] = {'by_ep': by_ep, 'tags': by_tag, 'ts': time.time()}
+
+
+def _dm3_prefetch(name):
+    key = _title_norm(name)
+    if not key:
+        return
+    hit = _DM3_SERIES.get(key)
+    if hit and time.time() - hit['ts'] < 1800:
+        return
+    try:
+        threading.Thread(target=_dm3_build, args=(name,), daemon=True).start()
+    except Exception:
+        pass
+
+
+def _dm3_url(name, ep, tag=''):
+    """只用已建好的表，绝不在这里发请求，保证点播不被拖慢。"""
+    hit = _DM3_SERIES.get(_title_norm(name))
+    if not hit:
+        return ''
+    n = max(1, int(ep or 1))
+    eid = 0
+    tg = hit['tags'].get((tag or '').lower()) or {}
+    if tg.get(n):
+        eid = tg[n]
+    if not eid:
+        eid = hit['by_ep'].get(n) or hit['by_ep'].get(1) or 0
+    if not eid:
+        return ''
+    return '%s/api/v2/comment/%s?withRelated=true&format=xml' % (_DMX3_BASE, eid)
+
+
+_DM3_OKC = {}
+
+
+def _dm3_ok(u):
+    """轻量验一下这份 XML 真的有条目（空壳就 31 字节），免得壳里显示 0 条。"""
+    hit = _DM3_OKC.get(u)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    ok = False
+    try:
+        r = requests.get(u, headers={'User-Agent': UA}, timeout=4, stream=True)
+        n = int(r.headers.get('Content-Length') or 0)
+        ok = (r.status_code == 200 and n > 1000)
+        r.close()
+    except Exception:
+        ok = False
+    _DM3_OKC[u] = (time.time() + 900, ok)
+    return ok
+
+
+def _dm3_attach(name, ep, tag, label):
+    try:
+        u = _dm3_url(name, ep, tag)
+        if not u or not _dm3_ok(u):
+            return {}
+        return {'danmaku': [{'name': label, 'url': u}]}
+    except Exception:
+        return {}
 
 
 def _dmx_ep(label):
@@ -32964,6 +33096,10 @@ class Spider(XMFCore):
         try:
             _one0 = ((core or {}).get('list') or [None])[0]
             _box['name'] = str((_one0 or {}).get('vod_name') or '')
+            try:
+                _dm3_prefetch(_box['name'])
+            except Exception:
+                pass
             _box['epn'] = _max_eps(core)
 
             def _job_mg():
@@ -33187,7 +33323,8 @@ class Spider(XMFCore):
                         if '$' not in _it:
                             continue
                         _lab, _tok = _it.split('$', 1)
-                        for _pfx in ('txhd:', 'iqweb:'):
+                        _DM3_TOK[_tok] = {'name': _nm_all, 'ep': _dmx_ep(_lab)}
+                        for _pfx in ('txhd:', 'iqweb:', 'mgx4:'):
                             if _tok.startswith(_pfx):
                                 _DMX_META[_tok[len(_pfx):]] = {'name': _nm_all, 'ep': _lab}
             except Exception:
@@ -33303,19 +33440,52 @@ class Spider(XMFCore):
         vod['vod_play_from'] = '$$$'.join(out)
 
     def playerContent(self, flag, id, vipFlags=None):
+        res = self._pc(flag, id, vipFlags)
+        try:
+            if isinstance(res, dict) and res.get('url') and not res.get('danmaku'):
+                _info = _DM3_TOK.get(str(id or '')) or {}
+                _nm = _info.get('name') or ''
+                _ep = int(_info.get('ep') or 1)
+                _tg = ''
+                for _k, _v in (('腾讯', 'qq'), ('爱奇艺', 'iqiyi'), ('优酷', 'youku'), ('芒果', 'imgo')):
+                    if _k in str(flag or ''):
+                        _tg = _v
+                        break
+                _u5 = _dm3_url(_nm, _ep, _tg) if _nm else ''
+                if _u5 and _dm3_ok(_u5):
+                    res['danmaku'] = [{'name': '第三方弹幕', 'url': _u5}]
+        except Exception:
+            pass
+        return res
+
+    def _pc(self, flag, id, vipFlags=None):
         s = str(id or '')
         if s.startswith('mgx4:'):
             page = s.split(':', 1)[1]
             u = _mg_play(page, True) or _mg_play(page, False)
             if u:
-                return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': MG_CDN_UA}}
+                out = {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': MG_CDN_UA}}
+                _m3 = _DMX_META.get(page) or {}
+                if _m3.get('name'):
+                    _e3 = _dm3_attach(_m3['name'], _dmx_ep(_m3.get('ep')), 'imgo', '第三方弹幕·芒果')
+                    if _e3:
+                        out.update(_e3)
+                return out
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': '芒果这集没解析出流，换条线路试试'}
         if s.startswith('txhd:'):
             page = s.split(':', 1)[1]
             u = _tx_play(page)
             if u:
                 out = {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': 'okhttp/4.12.0'}}
-                out.update(_dmx_attach('tx', page))
+                _off = _dmx_attach('tx', page).get('danmaku') or []
+                _m3 = _DMX_META.get(page) or {}
+                _tp = []
+                if _m3.get('name'):
+                    _e3 = _dm3_attach(_m3['name'], _dmx_ep(_m3.get('ep')), 'qq', '第三方·腾讯官方库')
+                    _tp = _e3.get('danmaku') or []
+                _all = _tp + _off
+                if _all:
+                    out['danmaku'] = _all
                 return out
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': '腾讯这集没解析出流，换条线路试试'}
         if s.startswith('iqweb:'):
@@ -33324,7 +33494,15 @@ class Spider(XMFCore):
             if u:
                 out = {'parse': 0, 'jx': 0, 'url': u,
                        'header': {'User-Agent': 'okhttp/4.12.0'}}
-                out.update(_dmx_attach('iq', page))
+                _off = _dmx_attach('iq', page).get('danmaku') or []
+                _m3 = _DMX_META.get(page) or {}
+                _tp = []
+                if _m3.get('name'):
+                    _e3 = _dm3_attach(_m3['name'], _dmx_ep(_m3.get('ep')), 'iqiyi', '第三方·爱奇艺官方库')
+                    _tp = _e3.get('danmaku') or []
+                _all = _tp + _off
+                if _all:
+                    out['danmaku'] = _all
                 return out
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': '爱奇艺这集没解出流，换条线路试试'}
         if s.startswith('blweb:'):
@@ -33335,11 +33513,19 @@ class Spider(XMFCore):
                        'header': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                                                'AppleWebKit/537.36 Chrome/120 Safari/537.36',
                                   'Referer': 'https://www.bilibili.com/'}}
+                _dm_list = []
+                _bi = _DM3_TOK.get(s) or {}
+                if _bi.get('name'):
+                    _u3 = _dm3_url(_bi['name'], int(_bi.get('ep') or 1), '')
+                    if _u3 and _dm3_ok(_u3):
+                        _dm_list.append({'name': '第三方弹幕', 'url': _u3})
                 _cid = _BL_DM.get(page) or 0
                 if _cid:
-                    # 原链配官方弹幕（B站官方 XML，免登可取）
-                    out['danmaku'] = [{'name': '哔哩哔哩官方弹幕',
-                                       'url': 'https://comment.bilibili.com/%d.xml' % _cid}]
+                    # 原链配官方弹幕（B站官方 XML，部分 cid 会 412，所以排在第三条）
+                    _dm_list.append({'name': '哔哩哔哩官方弹幕',
+                                     'url': 'https://comment.bilibili.com/%d.xml' % _cid})
+                if _dm_list:
+                    out['danmaku'] = _dm_list
                 return out
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': 'B站这集没解出流，换条线路试试'}
         if s.startswith('muouk:'):
