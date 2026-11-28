@@ -32793,7 +32793,7 @@ def _dm3_ok(u):
 def _dm3_attach(name, ep, tag, label):
     try:
         u = _dm3_url(name, ep, tag)
-        if not u or not _dm3_ok(u):
+        if not u:
             return {}
         return {'danmaku': [{'name': label, 'url': u}]}
     except Exception:
@@ -33452,7 +33452,7 @@ class Spider(XMFCore):
                         _tg = _v
                         break
                 _u5 = _dm3_url(_nm, _ep, _tg) if _nm else ''
-                if _u5 and _dm3_ok(_u5):
+                if _u5:
                     res['danmaku'] = [{'name': '第三方弹幕', 'url': _u5}]
         except Exception:
             pass
@@ -33517,7 +33517,7 @@ class Spider(XMFCore):
                 _bi = _DM3_TOK.get(s) or {}
                 if _bi.get('name'):
                     _u3 = _dm3_url(_bi['name'], int(_bi.get('ep') or 1), '')
-                    if _u3 and _dm3_ok(_u3):
+                    if _u3:
                         _dm_list.append({'name': '第三方弹幕', 'url': _u3})
                 _cid = _BL_DM.get(page) or 0
                 if _cid:
