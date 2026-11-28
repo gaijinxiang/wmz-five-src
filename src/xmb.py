@@ -31628,9 +31628,21 @@ def _bl_find(name, budget=8.0):
 _BL_EP_SKIP = ('预告', '花絮', '片花', '彩蛋', '特辑', '抢先看', '先导', '看点', 'PV', 'CM')
 
 
+def _bl_alias(name):
+    """《凡人修仙传 第二季》这种，B站搜全名搜不到，退回主片名再试"""
+    nm = _dump(name)
+    nm2 = re.sub(r'\s*(第[一二三四五六七八九十0-9]+季|Season\s*\d+|第[一二三四五六七八九十0-9]+部)\s*', '', nm)
+    nm2 = re.sub(r'[（(]\s*(19|20)\d{2}\s*[)）]', '', nm2).strip()
+    return nm2 or nm
+
+
 def _bl_eps(name, budget=10.0):
     """片名 → [(第N集, 播放页地址)]，最多 400 集"""
     kind = _bl_find(name, budget)
+    if not kind:
+        alt = _bl_alias(name)
+        if alt and alt != _dump(name):
+            kind = _bl_find(alt, budget)
     if not kind:
         return []
     out = []
@@ -32506,9 +32518,15 @@ class Spider(XMFCore):
                 每集走 4kzj parsesId=5 出 1080 DASH 清单（约 5Mbps）"""
                 try:
                     _e = _bl_eps(_box.get('name') or '', 10.0)
-                    if not _e or not _bl_play(_e[0][1]):
+                    if not _e:
                         _box['bl'] = []
                         return
+                    # 头 3 集里有一集能出流就上线；全都不行也照样挂，
+                    # 让面板显示「·失效」而不是整条线消失（影探4K 版的做法）
+                    _ok = any(_bl_play(pg) for _lab, pg in _e[:3])
+                    _box['bl'] = [('哔哩哔哩官方·1080P'
+                                   if _ok else '哔哩哔哩官方·1080P·待观察',
+                                   '#'.join('%s$blweb:%s' % (lab, page) for lab, page in _e))]
                     _box['bl'] = [('哔哩哔哩官方·1080P',
                                    '#'.join('%s$blweb:%s' % (lab, page) for lab, page in _e))]
                 except Exception:
