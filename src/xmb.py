@@ -31722,6 +31722,38 @@ def _m3u8_live(u, timeout=5):
         return False
 
 
+_CIBN_CACHE = {}
+
+
+def _cibn_local(url):
+    """cibn 的 flv 云转链（1ljx.com/cloud/flv）清单带 auth_key，解析出来几秒~几十秒就
+    402/503，直接交播放器必然「放不了」。做法同爱奇艺：现抓清单固化成
+    127.0.0.1 地址，分片是 cibn CDN 的绝对地址（带自己 5 小时 expire），可长播。"""
+    url = _dump(url)
+    if not url.startswith('http'):
+        return ''
+    if not any(k in url for k in ('1ljx.com/cloud/flv', 'cibntv.net', 'cloud/flv')):
+        return ''
+    hit = _CIBN_CACHE.get(url)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    import requests as _rq
+    body = ''
+    for ua in ('Mozilla/5.0', 'okhttp/4.12.0'):
+        try:
+            r = _rq.get(url, headers={'User-Agent': ua}, timeout=6)
+            if '#EXTM3U' in (r.text or '')[:400]:
+                body = r.text
+                break
+        except Exception:
+            body = ''
+    local = _iq_serve(body, url) if body else ''
+    _CIBN_CACHE[url] = (time.time() + 60, local)
+    while len(_CIBN_CACHE) > 60:
+        _CIBN_CACHE.pop(next(iter(_CIBN_CACHE)), None)
+    return local
+
+
 def _youku_play(page):
     """优酷：oxapi 回的口有时是 9090 中转（正文 <pre></pre> 死链），
     所以先验再给；不灵就退回 4kzj 解密 + 本地清单代理。"""
@@ -32644,6 +32676,27 @@ class Spider(XMFCore):
                            or ('-bilibili-' in u and '1080' not in f))]
             ff = [f for f, _ in _kk]
             uu = [u for _, u in _kk]
+            # 站点那条「优酷官方线路」是 cibn 的 flv 云转链（片头先垫 1.2MB 广告、常卡住），
+            # 面板里只要有带优酷播放页的线（影探/网页优酷），就用我们自己的 oxapi 直出顶替它
+            _yk_line = None
+            for _i, _u in enumerate(uu):
+                try:
+                    _pg = _tok_page(_u.split('#')[0].split('$')[-1])
+                except Exception:
+                    _pg = ''
+                if 'youku.com/v_show/' in _pg or 'youku.com/alipay_video/' in _pg:
+                    _yk_line = _i
+                    break
+            if _yk_line is not None:
+                _site_yk = [i for i, f in enumerate(ff)
+                            if ('优酷' in f and '影探' not in f and '小山' not in f
+                                and '-youku-' in uu[i])]
+                for _i in sorted(_site_yk, reverse=True):
+                    ff.pop(_i)
+                    uu.pop(_i)
+                    if _yk_line > _i:
+                        _yk_line -= 1
+                ff[_yk_line] = '优酷官方·1080P'
             _cached_bd = _BD_LINE_CACHE.get(_bd_norm(str(vod.get('vod_name') or '')))
             if _cached_bd and time.time() - _cached_bd[0] < 3600:
                 for _lf, _lu2 in _cached_bd[1]:
@@ -32657,8 +32710,13 @@ class Spider(XMFCore):
                 ff.append(f)
                 uu.append(u)
             # 我们这条腾讯官方 m3u8 排到第一位，点开就能播
-            _mine = [(f, u) for f, u in zip(ff, uu) if ('txhd:' in u or 'iqweb:' in u or 'blweb:' in u)]
-            _keep = [(f, u) for f, u in zip(ff, uu) if not ('txhd:' in u or 'iqweb:' in u or 'blweb:' in u)]
+            _yk_ok = any(f.startswith('优酷官方·1080P') for f in ff)
+            _mine = [(f, u) for f, u in zip(ff, uu)
+                     if ('txhd:' in u or 'iqweb:' in u or 'blweb:' in u
+                         or (_yk_ok and f.startswith('优酷官方·1080P')))]
+            _keep = [(f, u) for f, u in zip(ff, uu)
+                     if not ('txhd:' in u or 'iqweb:' in u or 'blweb:' in u
+                             or (_yk_ok and f.startswith('优酷官方·1080P')))]
             vod['vod_play_from'] = '$$$'.join([f for f, _ in _mine + _keep])
             vod['vod_play_url'] = '$$$'.join([u for _, u in _mine + _keep])
         for vod in ((core or {}).get('list') or []):
@@ -32801,7 +32859,16 @@ class Spider(XMFCore):
         if s.startswith('bdpan|'):
             return _bd_play(s)
         if 'xmfyy.com' in s or s.startswith('/vodplay/'):
-            return XMFCore.playerContent(self, flag, id, vipFlags)
+            got = XMFCore.playerContent(self, flag, id, vipFlags) or {}
+            u0 = _dump(got.get('url') or got.get('playUrl'))
+            local = _cibn_local(u0)
+            if local:
+                got = dict(got)
+                got['url'] = local
+                got['parse'] = 0
+                got['jx'] = 0
+                got['header'] = {'User-Agent': 'okhttp/4.12.0'}
+            return got
         if self._xf is not None and s:
             got = self._xf.playerContent(flag, s, vipFlags)
             # 影探/网页类线路常常只回一个“平台播放页”，播放器拿到网页必黑屏：
