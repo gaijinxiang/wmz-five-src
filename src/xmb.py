@@ -31323,6 +31323,19 @@ class Spider(XMFCore):
     BD_BUDGET = 12.0          # 百度网盘线（快映/木偶）最多等这么久
     XF_SKIP = ('网盘', '快映', '木偶', '玩偶', '剧透')   # 这些线不往小蜜蜂面板里塞
 
+    # ---- 壳兼容层：老壳只传 2 个参数（不带 pg），不兜就抛异常，壳会当成"搜索不可用"
+    def homeContent(self, filter=True):
+        return XMFCore.homeContent(self, filter)
+
+    def homeVideoContent(self):
+        return XMFCore.homeVideoContent(self)
+
+    def categoryContent(self, tid, pg='1', filter=True, extend=None):
+        return XMFCore.categoryContent(self, tid, pg or '1', filter, extend or {})
+
+    def searchContent(self, key, quick=True, pg='1'):
+        return XMFCore.searchContent(self, key, quick, pg or '1')
+
     def __init__(self):
         XMFCore.__init__(self)
         self._xf = None
