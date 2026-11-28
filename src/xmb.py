@@ -32718,6 +32718,8 @@ class Spider(XMFCore):
             for f, u in lines:
                 if any(k in f for k in self.XF_SKIP) and not ('百度' in f and '网盘' in f):
                     continue   # 稀饭那边只留 4K/云线，网盘一律不上；百度网盘单独加
+                if '优酷' in f:
+                    continue   # 影探侧带出来的「影探·优酷·1080P」同样摘掉
                 if any(self._nm(f) == self._nm(x) for x in ff):
                     continue
                 ff.append(f)
