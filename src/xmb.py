@@ -31698,66 +31698,21 @@ def _bl_eps(name, budget=10.0):
 
 
 def _bl_play(page):
-    """哔哩哔哩：4kzj 那条已经全 parsesId「解析失败」，而且它给的 .mpd 里 BaseURL 的 & 没转义
-    连 ffmpeg 都读不了（谁来都黑屏）。改走 B 站自家 playurl 的 progressive mp4（fnval=1），
-    单 URL、H.264，任何播放器都能放；免登最高 480P，1080/4K 要登录态。"""
+    """哔哩哔哩播放页 → 真流。B站自家 API 直接 412（要 cookie/buvid），
+    改走 4kzj parsesId=5：回 https://baidu.con/ 密文，解出来是 DASH 的 .mpd（1080，约 5Mbps）。"""
     page = _dump(page)
     if not page.startswith('http'):
         return ''
     hit = _BL_CACHE.get(page)
     if hit and hit[0] > time.time():
         return hit[1]
-    import requests as _rq
-    ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-          '(KHTML, like Gecko) Chrome/120.0 Safari/537.36')
-    s0 = _rq.Session()
-    s0.headers.update({'User-Agent': ua, 'Referer': 'https://www.bilibili.com/'})
-    try:
-        s0.get('https://www.bilibili.com/', timeout=6)   # 拿 buvid3，否则 412
-    except Exception:
-        pass
-    url = ''
-    try:
-        mep = _re.search(r'/bangumi/play/(ep\d+)', page)
-        mbv = _re.search(r'/video/(BV[0-9A-Za-z]+)', page)
-        if mep:
-            ep = mep.group(1)
-            j = s0.get('https://api.bilibili.com/pgc/view/web/season',
-                       params={'ep_id': ep[2:]}, timeout=8).json()
-            res = (j.get('result') or {})
-            eps = res.get('episodes') or []
-            pick = None
-            for it in eps:
-                if str(it.get('id')) == ep[2:]:
-                    pick = it
-                    break
-            if not pick and eps:
-                pick = eps[0]
-            if pick:
-                j2 = s0.get('https://api.bilibili.com/pgc/player/web/playurl',
-                            params={'ep_id': pick.get('id'), 'qn': 80, 'fnval': 1, 'fourk': 0},
-                            timeout=8).json()
-                d = ((j2.get('result') or {}).get('durl') or [])
-                if d:
-                    url = d[0].get('url') or ''
-        elif mbv:
-            bv = mbv.group(1)
-            j = s0.get('https://api.bilibili.com/x/web-interface/view',
-                       params={'bvid': bv}, timeout=8).json()
-            cid = ((j.get('data') or {}).get('cid')) or 0
-            if cid:
-                j2 = s0.get('https://api.bilibili.com/x/player/playurl',
-                            params={'bvid': bv, 'cid': cid, 'qn': 80, 'fnval': 1, 'fourk': 0},
-                            timeout=8).json()
-                d = ((j2.get('data') or {}).get('durl') or [])
-                if d:
-                    url = d[0].get('url') or ''
-    except Exception:
-        url = ''
-    _BL_CACHE[page] = (time.time() + (600 if url else 20), url)
+    got = _iq_stream(page)          # 复用爱奇艺那套解密（key=密文前 16 字符）
+    if got and not ('.mpd' in got or '.m3u8' in got):
+        got = ''
+    _BL_CACHE[page] = (time.time() + (900 if got else 20), got)
     while len(_BL_CACHE) > 120:
         _BL_CACHE.pop(next(iter(_BL_CACHE)), None)
-    return url
+    return got
 
 
 _YOUKU_CACHE = {}
@@ -32761,9 +32716,9 @@ class Spider(XMFCore):
                     # 让面板显示「·失效」而不是整条线消失（影探4K 版的做法）
                     _ok = any(_bl_play(pg) for _lab, pg in _e[:3])
                     _box['bl'] = [('哔哩哔哩官方·1080P'
-                                   if _ok else '哔哩哔哩官方·免登MP4·待观察',
+                                   if _ok else '哔哩哔哩官方·1080P·待观察',
                                    '#'.join('%s$blweb:%s' % (lab, page) for lab, page in _e))]
-                    _box['bl'] = [('哔哩哔哩官方·免登MP4',
+                    _box['bl'] = [('哔哩哔哩官方·1080P',
                                    '#'.join('%s$blweb:%s' % (lab, page) for lab, page in _e))]
                 except Exception:
                     _box['bl'] = []
@@ -32928,13 +32883,6 @@ class Spider(XMFCore):
         except Exception:
             return False, 0.0
         u = _dump(r.get('url') or r.get('playUrl'))
-        hdr = {'User-Agent': 'Mozilla/5.0'}
-        try:
-            for k, v in (r.get('header') or {}).items():
-                if isinstance(v, str) and v:
-                    hdr[k] = v
-        except Exception:
-            pass
         if not u.startswith('http'):
             return False, 0.0
         if any(k in u for k in ('mgtv.com/b/', 'v.qq.com/x/cover/', 'iqiyi.com/v_',
@@ -32943,7 +32891,7 @@ class Spider(XMFCore):
         import requests as _rq
         try:
             if '.mpd' in u:
-                m = _rq.get(u, headers=hdr, timeout=4.0)
+                m = _rq.get(u, headers={'User-Agent': 'okhttp/4.12.0'}, timeout=4.0)
                 body = m.text or ''
                 if m.status_code != 200 or '<MPD' not in body[:400]:
                     return False, 0.0
@@ -32953,7 +32901,7 @@ class Spider(XMFCore):
                 u = mm.group(1).replace('&amp;', '&')
             if '.m3u8' in u:
                 # 有些源的 m3u8 是几百 KB 的超长清单（1 秒一段），1.5 秒拉不完会误判失效
-                m = _rq.get(u, headers=hdr, timeout=4.0)
+                m = _rq.get(u, headers={'User-Agent': 'Mozilla/5.0'}, timeout=4.0)
                 body = m.text or ''
                 ctype = (m.headers.get('Content-Type') or '').lower()
                 # 失效链常是 200 + HTML「地址已失效」，旧逻辑会当活链
@@ -32968,7 +32916,7 @@ class Spider(XMFCore):
                 u = urllib.parse.urljoin(u, seg)
             t0 = time.time()
             got = 0
-            resp = _rq.get(u, headers=hdr, stream=True, timeout=2.0)
+            resp = _rq.get(u, headers={'User-Agent': 'Mozilla/5.0'}, stream=True, timeout=2.0)
             if resp.status_code not in (200, 206):
                 try:
                     resp.close()
@@ -33052,11 +33000,7 @@ class Spider(XMFCore):
             page = s.split(':', 1)[1]
             u = _bl_play(page)
             if u:
-                # B站 CDN 认 Referer，不带必 403/黑屏
-                return {'parse': 0, 'jx': 0, 'url': u,
-                        'header': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                                                'AppleWebKit/537.36 Chrome/120 Safari/537.36',
-                                   'Referer': 'https://www.bilibili.com/'}}
+                return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': 'okhttp/4.12.0'}}
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': 'B站这集没解出流，换条线路试试'}
         if s.startswith('muouk:'):
             p3 = s.split(':', 1)[1].split('|')
