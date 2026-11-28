@@ -32196,6 +32196,61 @@ def _bd_norm(x):
     return _re.sub(r"[\s《》〈〉（）()\[\]【】·・:：,，.。!！?？\-—_、|]+", "", _dump(x))
 
 
+_MUOU_HOST = 'https://333.333291.xyz'   # 木偶新址（首页标题写着"再见我们跑路了"，但搜索/详情/夸克盘全在）
+
+def _muou_quark(name, budget=9.0):
+    """木偶（333.333291.xyz）→ 夸克分享链接（免登可列集、可出直链）"""
+    import requests as _rq
+    key = _bd_norm(name)
+    if not key:
+        return ''
+    try:
+        r = _rq.get('%s/index.php/vod/search/wd/%s.html' % (_MUOU_HOST, quote(name)),
+                    headers={'User-Agent': pn_PC_UA}, timeout=6)
+        html = r.text or ''
+    except Exception:
+        return ''
+    ids = []
+    for m in _re.finditer(r'/index\.php/vod/detail/id/(\d+)\.html', html):
+        if m.group(1) not in ids:
+            ids.append(m.group(1))
+    for did in ids[:3]:
+        try:
+            d = _rq.get('%s/index.php/vod/detail/id/%s.html' % (_MUOU_HOST, did),
+                        headers={'User-Agent': pn_PC_UA}, timeout=6).text or ''
+        except Exception:
+            continue
+        ttl = ''
+        m = _re.search(r'<title>(.*?)</title>', d, _re.S | _re.I)
+        if m:
+            ttl = _re.sub(r'[-—|].*$', '', m.group(1)).strip()
+        qk = _re.findall(r'https://pan\.quark\.cn/s/[0-9A-Za-z]+(?:\?pwd=\w+)?', d)
+        if not qk:
+            continue
+        if _bd_norm(ttl) != key and key not in _bd_norm(ttl):
+            continue
+        return qk[0]
+    return ''
+
+def _muou_eps(share_url, maxn=400):
+    """夸克分享 → 集表（第N集$muouk:pwd|fid|fid_token）"""
+    try:
+        q = pn_QuarkDrive('')
+        vids = q.list_videos(share_url, limit=maxn)
+    except Exception:
+        return '', 0
+    if not vids:
+        return '', 0
+    vids = sorted(vids, key=lambda x: _dump(x.get('file_name')))
+    eps = []
+    for i, it in enumerate(vids, 1):
+        fid = it.get('fid') or ''
+        tok = it.get('share_fid_token') or ''
+        if not fid or not tok:
+            continue
+        eps.append('第%d集$muouk:%s|%s|%s' % (i, it.get('pwd_id') or '', fid, tok))
+    return '#'.join(eps), len(eps)
+
 def _bd_shares(name, budget=6.0):
     """搜快映/木偶的「百度」分组，返回 [(线路名, 分享链接)]"""
     key = _bd_norm(name)
@@ -32624,7 +32679,34 @@ class Spider(XMFCore):
                 except Exception:
                     _box['bl'] = []
 
+            def _job_muou():
+                _t0 = time.time()
+                while time.time() - _t0 < 4.0 and not _box.get('name'):
+                    time.sleep(0.2)
+                _nm = _box.get('name') or ''
+                if not _nm:
+                    return
+                try:
+                    _sh = _muou_quark(_nm, 9.0)
+                    if not _sh:
+                        return
+                    _e5, _c5 = _muou_eps(_sh)
+                    if not _e5:
+                        return
+                    # 夸克游客只放行图片（视频直链要求登录），拿不到直链就不上线，
+                    # 免得面板上摆一条假有效的「失效」线
+                    _first = _e5.split('#')[0].split('$', 1)[1]
+                    try:
+                        if not ((self.playerContent('', _first, None) or {}).get('url')):
+                            return
+                    except Exception:
+                        return
+                    _box['muou'] = ('木偶·网盘·夸克4K·%d集' % _c5, _e5)
+                except Exception:
+                    pass
+
             _bd_thread = _th.Thread(target=_job_bd)
+            _muou_thread = _th.Thread(target=_job_muou)
             _mg_thread = _th.Thread(target=_job_mg)
             _tx_thread = _th.Thread(target=_job_tx)
             _iq_thread = _th.Thread(target=_job_iq)
@@ -32639,12 +32721,19 @@ class Spider(XMFCore):
             _bl_thread.start()
             _bd_thread.daemon = True
             _bd_thread.start()
+            _muou_thread.daemon = True
+            _muou_thread.start()
         except Exception:
             _bd_thread = None
         _t.join(self.XF_BUDGET)
         try:
             if _bd_thread is not None:
                 _bd_thread.join(self.BD_BUDGET)
+        except Exception:
+            pass
+        try:
+            if _muou_thread is not None:
+                _muou_thread.join(9.0)
         except Exception:
             pass
         try:
@@ -32707,6 +32796,10 @@ class Spider(XMFCore):
                     if _yk_line > _i:
                         _yk_line -= 1
                 ff[_yk_line] = '优酷官方·1080P'
+            _mu = _box.get('muou')
+            if _mu and not any('木偶' in x for x in ff):
+                ff.append(_mu[0])
+                uu.append(_mu[1])
             _cached_bd = _BD_LINE_CACHE.get(_bd_norm(str(vod.get('vod_name') or '')))
             if _cached_bd and time.time() - _cached_bd[0] < 3600:
                 for _lf, _lu2 in _cached_bd[1]:
@@ -32868,6 +32961,23 @@ class Spider(XMFCore):
             if u:
                 return {'parse': 0, 'jx': 0, 'url': u, 'header': {'User-Agent': 'okhttp/4.12.0'}}
             return {'parse': 0, 'jx': 0, 'url': '', 'msg': 'B站这集没解出流，换条线路试试'}
+        if s.startswith('muouk:'):
+            p3 = s.split(':', 1)[1].split('|')
+            if len(p3) >= 3:
+                try:
+                    q = pn_QuarkDrive('')
+                    # 新实例没有 stoken 缓存，download 接口要先 share_token 把会话跑起来
+                    try:
+                        q.share_token(p3[0])
+                    except Exception:
+                        pass
+                    r = q.play_anonymous(p3[0], p3[1], p3[2])
+                    if r and r.get('url'):
+                        return r
+                except Exception:
+                    pass
+                return {'parse': 0, 'url': ''}
+            return {'parse': 0, 'url': ''}
         if s.startswith('bdpan|'):
             return _bd_play(s)
         if 'xmfyy.com' in s or s.startswith('/vodplay/'):
