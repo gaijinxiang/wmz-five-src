@@ -31487,6 +31487,59 @@ def _tok_page(tok):
 _OX_CACHE = {}
 
 
+_K4_HOSTS = ('ym4kjx', 'hd4kjx', 'sd4kjx', 'mm4kjx', 'mv4kjx', 'vk4kjx')
+_K4_CACHE = {}
+_K4_HEALTH = {}          # 4K 换链单独一套 pid 健康度（和爱奇艺那套互不污染）
+
+
+def _k4_ok(pid):
+    return _K4_HEALTH.get(pid, 0) < time.time()
+
+
+def _k4_mark(pid, ok):
+    _K4_HEALTH[pid] = 0 if ok else time.time() + 600.0
+
+
+def _k4_chain(page):
+    """4K 线路（ym4kjx 的 mp4/mkv，源站本身 404）→ 级联扫 pid 换出联通云/天翼云直链。
+    影探4K 版的做法：500/解析失败一次就熔断，命中即记账，总预算 16s。"""
+    page = _dump(page)
+    host = (urllib.parse.urlparse(page).hostname or '').lower()
+    if not any(h in host for h in _K4_HOSTS):
+        return ''
+    hit = _K4_CACHE.get(page)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    import requests as _rq
+    url = ''
+    deadline = time.time() + 16.0
+    for pid in range(1, 21):
+        if not _k4_ok(pid):
+            continue
+        if time.time() > deadline:
+            break
+        try:
+            r = _rq.get('http://fys.lyyytv.cn/api/index?appid=10001&videoUrl=%s&parsesId=%d'
+                        % (urllib.parse.quote(page, safe="!'()*"), pid),
+                        headers={'User-Agent': 'okhttp/4.12.0', 'Accept-Encoding': 'identity'}, timeout=6)
+            body = r.text or ''
+            if r.status_code >= 500 or '解析失败' in body[:200]:
+                _k4_mark(pid, False)
+                continue
+            got = _iq_unwrap(body) if 'baidu.con' in body else ''
+            if got.startswith('http'):
+                _k4_mark(pid, True)
+                url = got
+                break
+        except Exception:
+            pass
+        time.sleep(0.1)
+    _K4_CACHE[page] = (time.time() + (300 if url else 10), url)
+    while len(_K4_CACHE) > 120:
+        _K4_CACHE.pop(next(iter(_K4_CACHE)), None)
+    return url
+
+
 def _ox_play(page):
     """平台播放页 → 真 m3u8（oxapi 默认档；优酷这类只有这个口认）"""
     page = _dump(page)
@@ -31527,6 +31580,10 @@ def _fix_platform_page(url):
             return _tx_play(url)
         if 'mgtv.com/b/' in url:
             return _mg_play(url, True) or _mg_play(url, False)
+        _k4host = (urllib.parse.urlparse(url).hostname or '').lower()
+        if any(h in _k4host for h in _K4_HOSTS):
+            # 4K 直链源站 404：换出联通云/华为云/天翼云直链再交播放器
+            return _k4_chain(url)
         if 'youku.com/v_show/' in url or 'youku.com/alipay_video/' in url:
             got = _ox_play(url)
             if got:
